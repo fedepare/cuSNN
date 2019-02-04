@@ -527,7 +527,7 @@ __global__ void stdp_paredes_kernel_channel(Layer **layers) {
 
                             int idx_xpad = idx_x_rf * layers[layer]->strides + cols;
                             int idx_ypad = idx_y_rf * layers[layer]->strides + rows;
-                            int idx_nodepad = idx_xpad * 
+                            int idx_nodepad = idx_xpad *
                                     (layers[layer]->inp_size[1] + layers[layer]->padding_total[0]) + idx_ypad;
 
                             int idx_syn = cols * layers[layer]->rf_side + rows;
