@@ -63,7 +63,7 @@ Network::Network(const int inp_size[3], const float inp_scale[2], const float si
 // destructor
 Network::~Network(){
 
-    free(this->h_inputs);
+    cudaFreeHost(this->h_inputs);
     free(this->h_inp_size);
     free(this->h_sim_step);
     free(this->h_node_refrac);
@@ -77,7 +77,7 @@ Network::~Network(){
     cudaFree(this->d_length_delay_inp);
 
     // clean layer data
-    free(this->h_layers);
+    cudaFreeHost(this->h_layers);
     cudaFree(this->h_d_layers);
     cudaFree(this->d_d_layers);
 }
@@ -150,7 +150,7 @@ Layer::~Layer() {
     cudaFree(this->d_stdp_precnt);
 
     // clean kernel data
-    free(this->h_kernels);
+    cudaFreeHost(this->h_kernels);
     cudaFree(this->h_d_kernels);
     cudaFree(this->d_d_kernels);
 }
@@ -174,8 +174,8 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
                int rf_side, int num_delays, float w_init, int kernel_channels, float sim_step) {
 
     // output map data
-    this->h_node_train = (int *) malloc(sizeof(int) * out_node_kernel * length_delay_out);
-    this->h_node_posttrace = (float *) malloc(sizeof(float) * out_node_kernel);
+    cudaMallocHost((void**)&this->h_node_train, sizeof(int) * out_node_kernel * length_delay_out);
+    cudaMallocHost((void**)&this->h_node_posttrace, sizeof(float) * out_node_kernel);
     cudaMalloc((void **)&this->d_node_train, sizeof(int) * out_node_kernel * length_delay_out);
     cudaMalloc((void **)&this->d_node_posttrace, sizeof(float) * out_node_kernel);
     for (int i = 0; i < out_node_kernel; i++) {
@@ -212,8 +212,8 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
                sizeof(float) * out_nodesep_kernel, cudaMemcpyHostToDevice);
 
     // synaptic weights
-    this->h_weights_exc = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
-    this->h_weights_inh = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    cudaMallocHost((void**)&this->h_weights_exc, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    cudaMallocHost((void**)&this->h_weights_inh, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_exc, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_inh, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     for (int ch = 0; ch < kernel_channels; ch++) {
@@ -249,13 +249,13 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
 // destructor
 Kernel::~Kernel() {
 
-    free(this->h_node_train);
-    free(this->h_node_posttrace);
+    cudaFreeHost(this->h_node_train);
+    cudaFreeHost(this->h_node_posttrace);
     free(this->h_nodesep_V);
     free(this->h_nodesep_refrac);
     free(this->h_nodesep_train);
-    free(this->h_weights_exc);
-    free(this->h_weights_inh);
+    cudaFreeHost(this->h_weights_exc);
+    cudaFreeHost(this->h_weights_inh);
     free(this->h_delay_active);
     free(this->h_stdp_paredes_objective);
     free(this->h_stdp_postcnt);
@@ -564,7 +564,7 @@ void Network::create_network(bool& break_fun) {
 
         // kernel initialization
         this->h_layers[l]->cnt_kernels = 0;
-        this->h_layers[l]->h_kernels = (Kernel **) malloc(sizeof(Kernel*) * this->h_layers[l]->out_size[0]);
+        cudaMallocHost((void**)&this->h_layers[l]->h_kernels, sizeof(Kernel*) * this->h_layers[l]->out_size[0]);
         for (int i = 0; i < this->h_layers[l]->out_size[0]; i++)
             this->h_layers[l]->add_kernel(this->h_layers[l]->out_node_kernel, this->h_layers[l]->out_nodesep_kernel,
                                           this->h_layers[l]->out_maps, this->h_layers[l]->length_delay_out,
@@ -629,8 +629,8 @@ void Network::create_network(bool& break_fun) {
     cudaMemcpy(this->d_length_delay_inp, this->h_length_delay_inp, sizeof(int), cudaMemcpyHostToDevice);
 
     // vectors for input data
-    this->h_inputs = (int *) malloc(sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-                                    this->h_length_delay_inp[0]);
+    cudaMallocHost((void**)&this->h_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] *
+                   this->h_inp_size[2] * this->h_length_delay_inp[0]);
     cudaMalloc((void **)&this->d_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
                this->h_length_delay_inp[0]);
     for (int ch = 0; ch < this->h_inp_size[0]; ch++) {
