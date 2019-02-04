@@ -156,6 +156,7 @@ class Layer {
         int enable_learning_cnt;
         int learning_warmup_time;
         int learning_updates_cnt;
+        int learning_updates_delta;
         int learning_limit_updates;
         float learning_rate;
 

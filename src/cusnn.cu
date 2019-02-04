@@ -1192,10 +1192,8 @@ void Network::feed(bool& break_fun) {
     // limit learning updates
     if (this->learning) {
         learning_limit_updates<<<this->block_1, 1>>>(this->d_d_layers);
-        for (int l = 0; l < this->cnt_layers; l++) {
-            cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
+        for (int l = 0; l < this->cnt_layers; l++)
             if (this->h_layers[l]->limit_learning) break_fun = true;
-        }
     }
 }
 

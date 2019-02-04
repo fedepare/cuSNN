@@ -307,6 +307,9 @@ __global__ void update_V(Layer **layers, float *sim_step, float *refrac) {
                         layers[layer]->threshold_diehl_increase;
         }
 
+        // update delta counter for limiting learning
+        layers[layer]->learning_updates_delta = 0;
+
         // update counters for Gerstner's and Kheradpisheh's STDP
         if (layers[layer]->learning_type == 3 ||
             layers[layer]->learning_type == 4) {
@@ -1446,6 +1449,7 @@ __global__ void update_output(Layer **layers, float *sim_step) {
             if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
                 layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = 1;
                 layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
+                layers[layer]->learning_updates_delta = 1;
             }
         }
 
@@ -1468,19 +1472,8 @@ __global__ void learning_limit_updates(Layer **layers) {
         layers[layer]->learning &&
         layers[layer]->learning_type) {
 
-        bool spike = false;
-        for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
-            for (int i = 0; i < layers[layer]->out_node_kernel; i++) {
-                if (layers[layer]->d_d_kernels[k]->d_node_train[i * layers[layer]->length_delay_out]) {
-                    layers[layer]->learning_updates_cnt++;
-                    spike = true;
-                    break;
-                }
-                if (spike) break;
-            }
-        }
-
-        if (layers[layer]->learning_updates_cnt > layers[layer]->learning_limit_updates &&
+        layers[layer]->learning_updates_cnt += layers[layer]->learning_updates_delta;
+        if (layers[layer]->learning_updates_cnt >= layers[layer]->learning_limit_updates &&
             layers[layer]->learning_limit_updates > 0) {
             layers[layer]->learning_updates_cnt = 0;
             layers[layer]->learning = false;
