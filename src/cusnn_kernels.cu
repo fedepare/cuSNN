@@ -323,80 +323,11 @@ __global__ void update_V(Layer **layers, float *sim_step, float *refrac) {
 
 
 // STDP select firing node in each channel of each kernel
-__global__ void spatial_firing_node_kernel_channel(Layer **layers) {
+__device__ void spatial_firing_node_kernel_channel(Layer **layers, int layer, int channel, int kernel) {
 
-    int layer = blockIdx.x;
-    int channel = blockIdx.y;
-    int kernel = threadIdx.x;
+    layers[layer]->d_d_kernels[kernel]->d_V_max[channel] = 0.f;
+    layers[layer]->d_d_kernels[kernel]->d_node_max[channel] = -1;
 
-    if (layers[layer]->inp_size[0] > channel &&
-        layers[layer]->cnt_kernels > kernel &&
-        ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
-
-        layers[layer]->d_d_kernels[kernel]->d_V_max[channel] = 0.f;
-        layers[layer]->d_d_kernels[kernel]->d_node_max[channel] = -1;
-
-        if (layers[layer]->active &&
-            layers[layer]->firing_node &&
-            layers[layer]->inhibition &&
-            layers[layer]->learning &&
-            layers[layer]->learning_type &&
-            layers[layer]->inhibition_spatial) {
-
-            for (int node = 0; node < layers[layer]->out_node_kernel; node++) {
-                int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
-                if (layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] &&
-                    layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] >
-                    layers[layer]->d_d_kernels[kernel]->d_V_max[channel]) {
-
-                    layers[layer]->d_d_kernels[kernel]->d_V_max[channel] =
-                            layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep];
-                    layers[layer]->d_d_kernels[kernel]->d_node_max[channel] = node;
-                }
-            }
-        }
-    }
-}
-
-
-// STDP select firing node in each kernel
-__global__ void spatial_firing_node_kernel(Layer **layers) {
-
-    int layer = blockIdx.x;
-    int kernel = threadIdx.x;
-
-    if (layers[layer]->cnt_kernels > kernel) {
-
-        layers[layer]->d_d_kernels[kernel]->V_max = 0.f;
-        layers[layer]->d_d_kernels[kernel]->node_max = -1;
-        layers[layer]->d_d_kernels[kernel]->channel_max = -1;
-
-        if (layers[layer]->active &&
-            layers[layer]->firing_node &&
-            layers[layer]->inhibition &&
-            layers[layer]->learning &&
-            layers[layer]->learning_type &&
-            layers[layer]->inhibition_spatial) {
-
-            for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
-                if (layers[layer]->d_d_kernels[kernel]->d_V_max[ch] >
-                    layers[layer]->d_d_kernels[kernel]->V_max) {
-                    layers[layer]->d_d_kernels[kernel]->V_max = layers[layer]->d_d_kernels[kernel]->d_V_max[ch];
-                    layers[layer]->d_d_kernels[kernel]->node_max = layers[layer]->d_d_kernels[kernel]->d_node_max[ch];
-                    layers[layer]->d_d_kernels[kernel]->channel_max = ch;
-                }
-            }
-        }
-    }
-}
-
-
-// STDP select firing node
-__global__ void spatial_firing_node(Layer **layers) {
-
-    int layer = blockIdx.x;
-
-    layers[layer]->kernel_max = -1;
     if (layers[layer]->active &&
         layers[layer]->firing_node &&
         layers[layer]->inhibition &&
@@ -404,42 +335,73 @@ __global__ void spatial_firing_node(Layer **layers) {
         layers[layer]->learning_type &&
         layers[layer]->inhibition_spatial) {
 
-        float V_max = 0.f;
-        for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
-            if (layers[layer]->d_d_kernels[k]->V_max > V_max) {
-                V_max = layers[layer]->d_d_kernels[k]->V_max;
-                layers[layer]->kernel_max = k;
-            }
-        }
-
-        if (layers[layer]->kernel_max != -1) {
-            int node = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->node_max;
-            int channel = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->channel_max;
+        for (int node = 0; node < layers[layer]->out_node_kernel; node++) {
             int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
-            layers[layer]->d_d_kernels[layers[layer]->kernel_max]->d_nodesep_perpendicular[idx_nodesep] = 0;
-            layers[layer]->d_d_kernels[layers[layer]->kernel_max]->learning_trigger = true;
+            if (layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] &&
+                layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] >
+                layers[layer]->d_d_kernels[kernel]->d_V_max[channel]) {
+
+                layers[layer]->d_d_kernels[kernel]->d_V_max[channel] =
+                        layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep];
+                layers[layer]->d_d_kernels[kernel]->d_node_max[channel] = node;
+            }
         }
     }
 }
 
 
-// STDP perpendicular inhibition
-__global__ void spatial_perpendicular_inhibition(Layer **layers) {
+// STDP select firing node in each kernel
+__device__ void spatial_firing_node_kernel(Layer **layers, int layer, int kernel) {
 
-    int layer = blockIdx.x;
-    int channel = blockIdx.y;
-    int kernel = threadIdx.x;
+    layers[layer]->d_d_kernels[kernel]->V_max = 0.f;
+    layers[layer]->d_d_kernels[kernel]->node_max = -1;
+    layers[layer]->d_d_kernels[kernel]->channel_max = -1;
 
     if (layers[layer]->active &&
+        layers[layer]->firing_node &&
+        layers[layer]->inhibition &&
         layers[layer]->learning &&
         layers[layer]->learning_type &&
-        layers[layer]->inhibition &&
-        layers[layer]->inhibition_spatial &&
-        layers[layer]->firing_node &&
-        layers[layer]->kernel_max != -1 &&
-        layers[layer]->inp_size[0] > channel &&
-        layers[layer]->cnt_kernels > kernel &&
-        ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
+        layers[layer]->inhibition_spatial) {
+
+        for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
+            if (layers[layer]->d_d_kernels[kernel]->d_V_max[ch] >
+                layers[layer]->d_d_kernels[kernel]->V_max) {
+                layers[layer]->d_d_kernels[kernel]->V_max = layers[layer]->d_d_kernels[kernel]->d_V_max[ch];
+                layers[layer]->d_d_kernels[kernel]->node_max = layers[layer]->d_d_kernels[kernel]->d_node_max[ch];
+                layers[layer]->d_d_kernels[kernel]->channel_max = ch;
+            }
+        }
+    }
+}
+
+
+// STDP select firing node
+__device__ void spatial_firing_node(Layer **layers, int layer) {
+
+    float V_max = 0.f;
+    layers[layer]->kernel_max = -1;
+    for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
+        if (layers[layer]->d_d_kernels[k]->V_max > V_max) {
+            V_max = layers[layer]->d_d_kernels[k]->V_max;
+            layers[layer]->kernel_max = k;
+        }
+    }
+
+    if (layers[layer]->kernel_max != -1) {
+        int node = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->node_max;
+        int channel = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->channel_max;
+        int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
+        layers[layer]->d_d_kernels[layers[layer]->kernel_max]->d_nodesep_perpendicular[idx_nodesep] = 0;
+        layers[layer]->d_d_kernels[layers[layer]->kernel_max]->learning_trigger = true;
+    }
+}
+
+
+// STDP perpendicular inhibition
+__device__ void spatial_perpendicular_inhibition(Layer **layers, int layer, int channel, int kernel) {
+
+    if (layers[layer]->kernel_max != -1) {
 
         int kernel_max = layers[layer]->kernel_max;
         int channel_max = layers[layer]->d_d_kernels[kernel_max]->channel_max;
@@ -471,6 +433,44 @@ __global__ void spatial_perpendicular_inhibition(Layer **layers) {
                     }
                 }
             }
+        }
+    }
+}
+
+
+// STDP select firing node in each channel of each kernel
+__global__ void spatial_perpendicular_inhibition_complete(Layer **layers) {
+
+    int layer = blockIdx.x;
+    int kernel = threadIdx.x;
+    int channel = threadIdx.y;
+
+    if (layers[layer]->active &&
+        layers[layer]->learning &&
+        layers[layer]->learning_type &&
+        layers[layer]->inhibition &&
+        layers[layer]->inhibition_spatial &&
+        layers[layer]->firing_node &&
+        layers[layer]->inp_size[0] > channel &&
+        layers[layer]->cnt_kernels > kernel &&
+        ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
+
+        bool inhibition = true;
+        while (inhibition) {
+            spatial_firing_node_kernel_channel(layers, layer, channel, kernel);
+            __syncthreads();
+            if (!channel)
+                spatial_firing_node_kernel(layers, layer, kernel);
+            __syncthreads();
+            if (!channel && !kernel)
+                spatial_firing_node(layers, layer);
+            __syncthreads();
+            spatial_perpendicular_inhibition(layers, layer, channel, kernel);
+            __syncthreads();
+
+            inhibition = false;
+            if (layers[layer]->kernel_max != -1) inhibition = true;
+            __syncthreads();
         }
     }
 }

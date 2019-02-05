@@ -408,6 +408,24 @@ void Network::modify_kernels_merge(int l) {
 }
 
 
+// create CUDA blocks and threads for kernel execution
+void Network::create_block_thread(int x, int y, int z, bool block) {
+    if (block) {
+        if (x * y * z > MAX_BLOCKS) {
+            printf("Warning: size(h_blocks[%i]) should be lower than %i.\n", this->cnt_blocks, MAX_BLOCKS);
+        }
+        this->h_blocks[this->cnt_blocks] = dim3((unsigned int) x, (unsigned int) y, (unsigned int) z);
+        this->cnt_blocks++;
+    } else {
+        if (x * y * z > MAX_THREADS) {
+            printf("Warning: size(h_threads[%i]) should be lower than %i.\n", this->cnt_blocks, MAX_THREADS);
+        }
+        this->h_threads[this->cnt_threads] = dim3((unsigned int) x, (unsigned int) y, (unsigned int) z);
+        this->cnt_threads++;
+    }
+}
+
+
 // create network
 void Network::create_network(bool& break_fun) {
 
@@ -630,9 +648,7 @@ void Network::create_network(bool& break_fun) {
 
     // vectors for input data
     cudaMallocHost((void**)&this->h_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] *
-                   this->h_inp_size[2] * this->h_length_delay_inp[0]);
-    cudaMalloc((void **)&this->d_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0]);
+                   this->h_inp_size[2] * this->h_length_delay_inp[0], cudaHostAllocMapped);
     for (int ch = 0; ch < this->h_inp_size[0]; ch++) {
         for (int i = 0; i < this->h_inp_size[1] * this->h_inp_size[2]; i++) {
             for (int d = 0; d < this->h_length_delay_inp[0]; d++) {
@@ -642,9 +658,7 @@ void Network::create_network(bool& break_fun) {
             }
         }
     }
-    cudaMemcpy(this->d_inputs, this->h_inputs,
-               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
+    cudaHostGetDevicePointer(&this->d_inputs, this->h_inputs, 0);
 
     // get maximums dimensions for CUDA kernels
     this->max_inputs = 0;
@@ -664,56 +678,24 @@ void Network::create_network(bool& break_fun) {
         if (this->max_delays < this->h_layers[l]->num_delays)
             this->max_delays = this->h_layers[l]->num_delays;
     }
-    if (this->max_inputs > MAX_BLOCKS) {
-        printf("Error: max_inputs has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_outputs > MAX_BLOCKS) {
-        printf("Error: max_outputs has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_channels > MAX_BLOCKS) {
-        printf("Error: max_channels has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_delays > MAX_THREADS) {
-        printf("Error: max_delays has to be equal or lower than 1024.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_kernels > MAX_THREADS) {
-        printf("Error: max_kernels has to be equal or lower than 1024.\n");
-        break_fun = true;
-        return;
-    }
 
-    // CUDA blocks and threads dimensions
-    this->block_0 = dim3((unsigned int) this->h_inp_size[0],
-                         (unsigned int) this->h_inp_size[1],
-                         (unsigned int) this->h_inp_size[2]);
-    this->block_1 = dim3((unsigned int) this->cnt_layers,
-                         1,
-                         1);
-    this->block_2 = dim3((unsigned int) this->cnt_layers,
-                         (unsigned int) this->max_inputs,
-                         (unsigned int) this->max_channels);
-    this->block_3 = dim3((unsigned int) this->cnt_layers,
-                         (unsigned int) this->max_outputs,
-                         (unsigned int) this->max_channels);
-    this->block_4 = dim3((unsigned int) this->cnt_layers,
-                         (unsigned int) this->max_outputs,
-                         1);
-    this->block_5 = dim3((unsigned int) this->cnt_layers,
-                         (unsigned int) this->max_channels,
-                         1);
-    this->block_6 = dim3((unsigned int) this->cnt_layers,
-                         (unsigned int) this->max_channels,
-                         (unsigned int) this->max_delays);
-    this->thread_0 = dim3((unsigned int) this->max_kernels,
-                          1,
-                          1);
-    this->thread_1 = dim3((unsigned int) this->max_delays,
-                          1,
-                          1);
+    // CUDA blocks and threads
+    this->cnt_blocks = 0;
+    this->cnt_threads = 0;
+    this->h_blocks = (dim3 *) malloc(sizeof(dim3) * 7);
+    this->h_threads = (dim3 *) malloc(sizeof(dim3) * 3);
+
+    this->create_block_thread(this->h_inp_size[0], this->h_inp_size[1], this->h_inp_size[2], true); // 0
+    this->create_block_thread(this->cnt_layers, 1, 1, true); // 1
+    this->create_block_thread(this->cnt_layers, this->max_inputs, this->max_channels, true); // 2
+    this->create_block_thread(this->cnt_layers, this->max_outputs, this->max_channels, true); // 3
+    this->create_block_thread(this->cnt_layers, this->max_outputs, 1, true); // 4
+    this->create_block_thread(this->cnt_layers, this->max_channels, 1, true); // 5
+    this->create_block_thread(this->cnt_layers, this->max_channels, this->max_delays, true); // 6
+
+    this->create_block_thread(this->max_kernels, 1, 1, false); // 0
+    this->create_block_thread(this->max_delays, 1, 1, false); // 1
+    this->create_block_thread(this->max_kernels, this->max_channels, 1, false); // 2
 }
 
 
@@ -1115,86 +1097,111 @@ void Network::summary() {
 
 // update input spike trains
 void Network::update_input() {
-    update_input_trains<<<this->block_0, 1>>>(this->d_inputs, this->d_inp_size, this->d_length_delay_inp);
-    cudaMemcpy(this->h_inputs, this->d_inputs,
-               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyDeviceToHost);
+    update_input_trains<<<this->h_blocks[0], 1>>>(this->d_inputs, this->d_inp_size, this->d_length_delay_inp);
+    cudaDeviceSynchronize();
 }
 
 
 // update network's state
 void Network::feed(bool& break_fun) {
 
-    // copy inputs to device
-    cudaMemcpy(this->d_inputs, this->h_inputs,
-               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
+    // timers
+//    typedef std::chrono::high_resolution_clock Time;
+//    typedef std::chrono::duration<float> fsec;
+//    srand((unsigned int) time(nullptr));
+//    time_t t = time(nullptr);
+//    struct tm *now = localtime(&t);
+//
+//    auto t0 = Time::now();
+//    auto t000 = Time::now();
+
+//    auto t1 = Time::now();
+//    fsec copyinputs = (t1 - t0) * 1.e3;
 
     // enable learning
     if (this->learning)
-        enable_learning<<<this->block_1, 1>>>(this->d_d_layers);
+        enable_learning<<<this->h_blocks[1], 1>>>(this->d_d_layers);
+
+//    t0 = Time::now();
+//    fsec enablelearning = (t0 - t1) * 1.e3;
 
     // update spike trains for input channels
-    update_input_channels<<<this->block_2, this->thread_1>>>(this->d_d_layers, this->d_sim_step, this->d_inputs);
+    update_input_channels<<<this->h_blocks[2], this->h_threads[1]>>>(this->d_d_layers, this->d_sim_step, this->d_inputs);
+
+//    t1 = Time::now();
+//    fsec updateinput = (t1 - t0) * 1.e3;
 
     // spike propagation
-    propagation<<<this->block_3, this->thread_0>>>(this->d_d_layers, this->d_inputs);
-    add_input<<<this->block_3, this->thread_0>>>(this->d_d_layers);
-    update_V<<<this->block_3, this->thread_0>>>(this->d_d_layers, this->d_sim_step, this->d_node_refrac);
+    propagation<<<this->h_blocks[3], this->h_threads[0]>>>(this->d_d_layers, this->d_inputs);
+    add_input<<<this->h_blocks[3], this->h_threads[0]>>>(this->d_d_layers);
+    update_V<<<this->h_blocks[3], this->h_threads[0]>>>(this->d_d_layers, this->d_sim_step, this->d_node_refrac);
 
-    // recursive spatial perpendicular inhibition (for learning)
-    bool inhibition = this->inhibition;
-    while (inhibition && this->learning) {
-        spatial_firing_node_kernel_channel<<<this->block_5, this->thread_0>>>(this->d_d_layers);
-        spatial_firing_node_kernel<<<this->block_1, this->thread_0>>>(this->d_d_layers);
-        spatial_firing_node<<<this->block_1, 1>>>(this->d_d_layers);
-        spatial_perpendicular_inhibition<<<this->block_5, this->thread_0>>>(this->d_d_layers);
-
-        inhibition = false;
-        for (int l = 0; l < this->cnt_layers; l++) {
-            cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
-            if (this->h_layers[l]->kernel_max != -1) inhibition = true;
-        }
-    }
+//    t0 = Time::now();
+//    fsec spikepropagation = (t0 - t1) * 1.e3;
 
     // perpendicular inhibition
-    if (inhibition) {
-        firing_node_kernel<<<this->block_4, this->thread_0>>>(this->d_d_layers);
-        firing_node<<<this->block_4, 1>>>(this->d_d_layers);
-        perpendicular_inhibition<<<this->block_3, this->thread_0>>>(this->d_d_layers);
+    if (this->inhibition) {
+        // spatial inhibition (recursive)
+        spatial_perpendicular_inhibition_complete<<<this->h_blocks[1], this->h_threads[2]>>>(this->d_d_layers);
+
+        // node-specific inhibition
+        firing_node_kernel<<<this->h_blocks[4], this->h_threads[0]>>>(this->d_d_layers);
+        firing_node<<<this->h_blocks[4], 1>>>(this->d_d_layers);
+        perpendicular_inhibition<<<this->h_blocks[3], this->h_threads[0]>>>(this->d_d_layers);
     }
+
+//    t1 = Time::now();
+//    fsec perpendicularinhibition = (t1 - t0) * 1.e3;
 
     // learning rules
     if (this->learning && this->learning_type == 1) { // Paredes' STDP
-        stdp_paredes_kernel_channel<<<this->block_6, this->thread_0>>>(this->d_d_layers);
-        learning_update_weights<<<this->block_6, this->thread_0>>>(this->d_d_layers);
-        stdp_paredes_track_convergence_channel<<<this->block_5, this->thread_0>>>(this->d_d_layers);
-        stdp_paredes_track_convergence<<<this->block_1, this->thread_0>>>(this->d_d_layers);
+        stdp_paredes_kernel_channel<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
+        learning_update_weights<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
+        stdp_paredes_track_convergence_channel<<<this->h_blocks[5], this->h_threads[0]>>>(this->d_d_layers);
+        stdp_paredes_track_convergence<<<this->h_blocks[1], this->h_threads[0]>>>(this->d_d_layers);
     } else if (this->learning && this->learning_type == 2) { // Shrestha's STDP
-        stdp_shrestha_kernel_channel<<<this->block_6, this->thread_0>>>(this->d_d_layers);
-        learning_update_weights<<<this->block_6, this->thread_0>>>(this->d_d_layers);
+        stdp_shrestha_kernel_channel<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
+        learning_update_weights<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
     } else if (this->learning && this->learning_type == 3) { // Gerstner's STDP
-        stdp_gerstner_kernel_channel<<<this->block_6, this->thread_0>>>(this->d_d_layers);
-        learning_update_weights<<<this->block_6, this->thread_0>>>(this->d_d_layers);
+        stdp_gerstner_kernel_channel<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
+        learning_update_weights<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
     } else if (this->learning && this->learning_type == 4) { // Kheradpisheh's STDP
-        stdp_kheradpisheh_kernel_channel<<<this->block_6, this->thread_0>>>(this->d_d_layers);
-        learning_update_weights<<<this->block_6, this->thread_0>>>(this->d_d_layers);
+        stdp_kheradpisheh_kernel_channel<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
+        learning_update_weights<<<this->h_blocks[6], this->h_threads[0]>>>(this->d_d_layers);
     }
+
+//    t0 = Time::now();
+//    fsec learningrules = (t0 - t1) * 1.e3;
 
     // drop delays
     if (this->learning && this->drop_delays)
-        drop_delays_kernel<<<this->block_1, this->thread_0>>>(this->d_d_layers, this->d_drop_delays_th);
+        drop_delays_kernel<<<this->h_blocks[1], this->h_threads[0]>>>(this->d_d_layers, this->d_drop_delays_th);
 
     // update outputs
-    update_output_channels<<<this->block_3, this->thread_0>>>(this->d_d_layers);
-    update_output<<<this->block_4, this->thread_0>>>(this->d_d_layers, this->d_sim_step);
+    update_output_channels<<<this->h_blocks[3], this->h_threads[0]>>>(this->d_d_layers);
+    update_output<<<this->h_blocks[4], this->h_threads[0]>>>(this->d_d_layers, this->d_sim_step);
 
+//    t1 = Time::now();
+//    fsec updateoutputs = (t1 - t0) * 1.e3;
+
+    // TODO: fix this
     // limit learning updates
     if (this->learning) {
-        learning_limit_updates<<<this->block_1, 1>>>(this->d_d_layers);
-        for (int l = 0; l < this->cnt_layers; l++)
+        learning_limit_updates<<<this->h_blocks[1], 1>>>(this->d_d_layers);
+        for (int l = 0; l < this->cnt_layers; l++) {
+            cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
             if (this->h_layers[l]->limit_learning) break_fun = true;
+        }
     }
+
+//    t0 = Time::now();
+//    fsec limitlearning = (t0 - t1) * 1.e3;
+//    auto t111 = Time::now();
+//    fsec total = (t111 - t000) * 1.e3;
+//
+//    printf("1: %f, 2: %f, 3: %f, 4: %f, 5: %f, 6: %f, 7: %f, 8: %f -> total: %f\n", copyinputs.count(), enablelearning.count(),
+//            updateinput.count(), spikepropagation.count(), perpendicularinhibition.count(), learningrules.count(),
+//            updateoutputs.count(), limitlearning.count(), total.count());
 }
 
 
@@ -1245,9 +1252,6 @@ void Network::init(){
             }
         }
     }
-    cudaMemcpy(this->d_inputs, this->h_inputs,
-               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
 
     // layer data
     for (int l = 0; l < this->cnt_layers; l++) {

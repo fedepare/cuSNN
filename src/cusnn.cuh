@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string>
+#include <chrono>
 #include <vector>
 #include <vector_types.h>
 
@@ -242,6 +243,12 @@ class Network {
         int max_kernels;
         int max_outputs;
         int max_delays;
+
+        dim3 *h_blocks;
+        dim3 *h_threads;
+        int cnt_blocks;
+        int cnt_threads;
+
         dim3 block_0;
         dim3 block_1;
         dim3 block_2;
@@ -251,6 +258,7 @@ class Network {
         dim3 block_6;
         dim3 thread_0;
         dim3 thread_1;
+        dim3 thread_2;
 
         // layers
         Layer** h_layers;
@@ -291,6 +299,7 @@ class Network {
         void summary();
         void init();
         void weights_to_device();
+        void create_block_thread(int x, int y, int z, bool block);
 };
 
 

@@ -20,10 +20,11 @@ __global__ void update_input_channels(Layer **layers, float *sim_step, int *inpu
 __global__ void propagation(Layer **layers, int *inputs);
 __global__ void add_input(Layer **layers);
 __global__ void update_V(Layer **layers, float *sim_step, float *refrac);
-__global__ void spatial_firing_node_kernel_channel(Layer **layers);
-__global__ void spatial_firing_node_kernel(Layer **layers);
-__global__ void spatial_firing_node(Layer **layers);
-__global__ void spatial_perpendicular_inhibition(Layer **layers);
+__device__ void spatial_firing_node_kernel_channel(Layer **layers, int layer, int channel, int kernel);
+__device__ void spatial_firing_node_kernel(Layer **layers, int layer, int kernel);
+__device__ void spatial_firing_node(Layer **layers, int layer);
+__device__ void spatial_perpendicular_inhibition(Layer **layers, int layer, int channel, int kernel);
+__global__ void spatial_perpendicular_inhibition_complete(Layer **layers);
 __global__ void stdp_paredes_kernel_channel(Layer **layers);
 __global__ void stdp_shrestha_kernel_channel(Layer **layers);
 __global__ void stdp_gerstner_kernel_channel(Layer **layers);
