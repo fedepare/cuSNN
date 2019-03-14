@@ -63,7 +63,7 @@ Network::Network(const int inp_size[3], const float inp_scale[2], const float si
 // destructor
 Network::~Network(){
 
-    free(this->h_inputs);
+    cudaFreeHost(this->h_inputs);
     free(this->h_inp_size);
     free(this->h_sim_step);
     free(this->h_node_refrac);
@@ -77,7 +77,7 @@ Network::~Network(){
     cudaFree(this->d_length_delay_inp);
 
     // clean layer data
-    free(this->h_layers);
+    cudaFreeHost(this->h_layers);
     cudaFree(this->h_d_layers);
     cudaFree(this->d_d_layers);
 }
@@ -139,9 +139,9 @@ Layer::Layer(std::string layer_type, bool learning, bool load_weights, bool home
 Layer::~Layer() {
 
     free(this->h_delay_indices);
-    free(this->h_synapse_pretrace);
-    free(this->h_kernels_cnvg);
-    free(this->h_stdp_precnt);
+    cudaFreeHost(this->h_synapse_pretrace);
+    cudaFreeHost(this->h_kernels_cnvg);
+    cudaFreeHost(this->h_stdp_precnt);
 
     cudaFree(this->d_delay_indices);
     cudaFree(this->d_max_kernel);
@@ -150,7 +150,7 @@ Layer::~Layer() {
     cudaFree(this->d_stdp_precnt);
 
     // clean kernel data
-    free(this->h_kernels);
+    cudaFreeHost(this->h_kernels);
     cudaFree(this->h_d_kernels);
     cudaFree(this->d_d_kernels);
 }
@@ -174,8 +174,8 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
                int rf_side, int num_delays, float w_init, int kernel_channels, float sim_step) {
 
     // output map data
-    this->h_node_train = (int *) malloc(sizeof(int) * out_node_kernel * length_delay_out);
-    this->h_node_posttrace = (float *) malloc(sizeof(float) * out_node_kernel);
+    cudaMallocHost((void**)&this->h_node_train, sizeof(int) * out_node_kernel * length_delay_out);
+    cudaMallocHost((void**)&this->h_node_posttrace, sizeof(float) * out_node_kernel);
     cudaMalloc((void **)&this->d_node_train, sizeof(int) * out_node_kernel * length_delay_out);
     cudaMalloc((void **)&this->d_node_posttrace, sizeof(float) * out_node_kernel);
     for (int i = 0; i < out_node_kernel; i++) {
@@ -188,9 +188,9 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
     cudaMemcpy(this->d_node_posttrace, this->h_node_posttrace,
                sizeof(float) * out_node_kernel, cudaMemcpyHostToDevice);
 
-    this->h_nodesep_train = (int *) malloc(sizeof(int) * out_nodesep_kernel);
-    this->h_nodesep_V = (float *) malloc(sizeof(float) * out_nodesep_kernel);
-    this->h_nodesep_refrac = (float *) malloc(sizeof(float) * out_nodesep_kernel);
+    cudaMallocHost((void**)&this->h_nodesep_train, sizeof(int) * out_nodesep_kernel);
+    cudaMallocHost((void**)&this->h_nodesep_V, sizeof(float) * out_nodesep_kernel);
+    cudaMallocHost((void**)&this->h_nodesep_refrac, sizeof(float) * out_nodesep_kernel);
     cudaMalloc((void **)&this->d_nodesep_train, sizeof(int) * out_nodesep_kernel);
     cudaMalloc((void **)&this->d_nodesep_V, sizeof(float) * out_nodesep_kernel);
     cudaMalloc((void **)&this->d_nodesep_channel_input, sizeof(float) * out_nodesep_kernel * kernel_channels);
@@ -212,8 +212,8 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
                sizeof(float) * out_nodesep_kernel, cudaMemcpyHostToDevice);
 
     // synaptic weights
-    this->h_weights_exc = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
-    this->h_weights_inh = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    cudaMallocHost((void**)&this->h_weights_exc, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    cudaMallocHost((void**)&this->h_weights_inh, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_exc, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_inh, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     for (int ch = 0; ch < kernel_channels; ch++) {
@@ -231,7 +231,7 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
                sizeof(float) * kernel_channels * rf_side * rf_side * num_delays, cudaMemcpyHostToDevice);
 
     // delay flags
-    this->h_delay_active = (bool *) malloc(sizeof(bool) * num_delays);
+    cudaMallocHost((void**)&this->h_delay_active, sizeof(bool) * num_delays);
     cudaMalloc((void **)&this->d_delay_active, sizeof(bool) * num_delays);
     cudaMalloc((void **)&this->d_sum_exc_weights, sizeof(float) * num_delays);
     for (int d = 0; d < num_delays; d++)
@@ -249,17 +249,17 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
 // destructor
 Kernel::~Kernel() {
 
-    free(this->h_node_train);
-    free(this->h_node_posttrace);
-    free(this->h_nodesep_V);
-    free(this->h_nodesep_refrac);
-    free(this->h_nodesep_train);
-    free(this->h_weights_exc);
-    free(this->h_weights_inh);
-    free(this->h_delay_active);
+    cudaFreeHost(this->h_node_train);
+    cudaFreeHost(this->h_node_posttrace);
+    cudaFreeHost(this->h_nodesep_V);
+    cudaFreeHost(this->h_nodesep_refrac);
+    cudaFreeHost(this->h_nodesep_train);
+    cudaFreeHost(this->h_weights_exc);
+    cudaFreeHost(this->h_weights_inh);
+    cudaFreeHost(this->h_delay_active);
     free(this->h_stdp_paredes_objective);
-    free(this->h_stdp_postcnt);
-    free(this->h_threshold_diehl_nodesep_theta);
+    cudaFreeHost(this->h_stdp_postcnt);
+    cudaFreeHost(this->h_threshold_diehl_nodesep_theta);
 
     cudaFree(this->d_node_train);
     cudaFree(this->d_node_posttrace);
@@ -554,7 +554,7 @@ void Network::create_network(bool& break_fun) {
         cudaMalloc((void **)&this->h_layers[l]->d_max_kernel, sizeof(int) * this->h_layers[l]->out_node_kernel);
 
         // pre-synaptic trace
-        this->h_layers[l]->h_synapse_pretrace = (float *) malloc(sizeof(float) * this->h_layers[l]->inp_synapses_total);
+        cudaMallocHost((void**)&this->h_layers[l]->h_synapse_pretrace, sizeof(float) * this->h_layers[l]->inp_synapses_total);
         cudaMalloc((void **)&this->h_layers[l]->d_synapse_pretrace, sizeof(float) *
                    this->h_layers[l]->inp_synapses_total);
         for (int i = 0; i < this->h_layers[l]->inp_synapses_total; i++)
@@ -564,7 +564,7 @@ void Network::create_network(bool& break_fun) {
 
         // kernel initialization
         this->h_layers[l]->cnt_kernels = 0;
-        this->h_layers[l]->h_kernels = (Kernel **) malloc(sizeof(Kernel*) * this->h_layers[l]->out_size[0]);
+        cudaMallocHost((void**)&this->h_layers[l]->h_kernels, sizeof(Kernel*) * this->h_layers[l]->out_size[0]);
         for (int i = 0; i < this->h_layers[l]->out_size[0]; i++)
             this->h_layers[l]->add_kernel(this->h_layers[l]->out_node_kernel, this->h_layers[l]->out_nodesep_kernel,
                                           this->h_layers[l]->out_maps, this->h_layers[l]->length_delay_out,
@@ -573,7 +573,7 @@ void Network::create_network(bool& break_fun) {
                                           this->h_layers[l]->kernel_channels, this->h_sim_step[0]);
 
         // kernel convergence
-        this->h_layers[l]->h_kernels_cnvg = (bool *) malloc(sizeof(bool) * this->h_layers[l]->cnt_kernels);
+        cudaMallocHost((void**)&this->h_layers[l]->h_kernels_cnvg, sizeof(bool) * this->h_layers[l]->cnt_kernels);
         cudaMalloc((void **)&this->h_layers[l]->d_kernels_cnvg, sizeof(bool) * this->h_layers[l]->cnt_kernels);
         for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++)
             this->h_layers[l]->h_kernels_cnvg[k] = false;
@@ -629,8 +629,8 @@ void Network::create_network(bool& break_fun) {
     cudaMemcpy(this->d_length_delay_inp, this->h_length_delay_inp, sizeof(int), cudaMemcpyHostToDevice);
 
     // vectors for input data
-    this->h_inputs = (int *) malloc(sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-                                    this->h_length_delay_inp[0]);
+    cudaMallocHost((void**)&this->h_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] *
+                   this->h_inp_size[2] * this->h_length_delay_inp[0]);
     cudaMalloc((void **)&this->d_inputs, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
                this->h_length_delay_inp[0]);
     for (int ch = 0; ch < this->h_inp_size[0]; ch++) {
@@ -663,27 +663,6 @@ void Network::create_network(bool& break_fun) {
             this->max_outputs = this->h_layers[l]->out_node_kernel;
         if (this->max_delays < this->h_layers[l]->num_delays)
             this->max_delays = this->h_layers[l]->num_delays;
-    }
-    if (this->max_inputs > MAX_BLOCKS) {
-        printf("Error: max_inputs has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_outputs > MAX_BLOCKS) {
-        printf("Error: max_outputs has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_channels > MAX_BLOCKS) {
-        printf("Error: max_channels has to be equal or lower than 65535.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_delays > MAX_THREADS) {
-        printf("Error: max_delays has to be equal or lower than 1024.\n");
-        break_fun = true;
-        return;
-    } else if (this->max_kernels > MAX_THREADS) {
-        printf("Error: max_kernels has to be equal or lower than 1024.\n");
-        break_fun = true;
-        return;
     }
 
     // CUDA blocks and threads dimensions
@@ -831,7 +810,7 @@ void Network::enable_stdp_shrestha(float learning_rate, float window_LTP, bool w
         this->h_layers[l]->stdp_shrestha_gerstner_window_LTP = (int) ceilf(window_LTP / this->h_sim_step[0]);
 
         // counters since last presynaptic spike
-        this->h_layers[l]->h_stdp_precnt = (int *) malloc(sizeof(int) * this->h_layers[l]->inp_synapses_total);
+        cudaMallocHost((void**)&this->h_layers[l]->h_stdp_precnt, sizeof(int) * this->h_layers[l]->inp_synapses_total);
         cudaMalloc((void **)&this->h_layers[l]->d_stdp_precnt, sizeof(int) * this->h_layers[l]->inp_synapses_total);
         for (int i = 0; i < this->h_layers[l]->inp_synapses_total; i++)
             this->h_layers[l]->h_stdp_precnt[i] = -1;
@@ -920,8 +899,7 @@ void Network::enable_stdp_gerstner(float learning_rate_exc, float window_LTP, fl
                        sizeof(bool) * this->h_layers[l]->out_maps * this->h_layers[l]->kernel_channels);
 
             // counters since last postsynaptic spike
-            this->h_layers[l]->h_kernels[k]->h_stdp_postcnt =
-                    (int *) malloc(sizeof(int) * this->h_layers[l]->out_nodesep_kernel);
+            cudaMallocHost((void**)&this->h_layers[l]->h_kernels[k]->h_stdp_postcnt, sizeof(int) * this->h_layers[l]->out_nodesep_kernel);
             cudaMalloc((void **)&this->h_layers[l]->h_kernels[k]->d_stdp_postcnt,
                        sizeof(int) * this->h_layers[l]->out_nodesep_kernel);
             for (int i = 0; i < this->h_layers[l]->out_nodesep_kernel; i++)
@@ -1033,8 +1011,7 @@ void Network::enable_adaptive_threshold_diehl(float threshold_delta, bool& break
             printf("Warning Layer %i: Using Paredes' and Diehl's homeostasis mechanism together.\n\n", l);
 
         for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++) {
-            this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta =
-                    (float *) malloc(sizeof(float) * this->h_layers[l]->out_nodesep_kernel);
+            cudaMallocHost((void**)&this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta, sizeof(float) * this->h_layers[l]->out_nodesep_kernel);
             cudaMalloc((void **)&this->h_layers[l]->h_kernels[k]->d_threshold_diehl_nodesep_theta,
                        sizeof(float) * this->h_layers[l]->out_nodesep_kernel);
             for (int i = 0; i < this->h_layers[l]->out_nodesep_kernel; i++)
