@@ -1158,7 +1158,6 @@ void Network::feed(bool& break_fun) {
     }
 
     // perpendicular inhibition
-    inhibition = this->inhibition;
     if (inhibition) {
         firing_node_kernel<<<this->block_4, this->thread_0>>>(this->d_d_layers);
         firing_node<<<this->block_4, 1>>>(this->d_d_layers);
