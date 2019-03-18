@@ -2,8 +2,6 @@
 #include "cusnn_kernels.cuh"
 
 
-#define MAX_THREADS 1024
-#define MAX_BLOCKS 65535
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 
@@ -14,8 +12,8 @@
 
 /* NETWORK CLASS */
 // constructor
-Network::Network(const int inp_size[3], const float inp_scale[2], const float sim_step, float node_refrac,
-                 float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th) {
+Network::Network(const int inp_size[3], const float inp_scale[2], int len_inputs_sequence, const float sim_step,
+                 float node_refrac, float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th) {
 
     this->cnt_layers = 0;
 
@@ -35,6 +33,30 @@ Network::Network(const int inp_size[3], const float inp_scale[2], const float si
     this->h_inp_size[1] = (int) ((float) inp_size[1] / this->inp_scale[0]); // height
     this->h_inp_size[2] = (int) ((float) inp_size[2] / this->inp_scale[1]); // width
     cudaMemcpy(this->d_inp_size, this->h_inp_size, sizeof(int) * 3, cudaMemcpyHostToDevice);
+
+    // length of input sequence
+    this->h_len_inputs_sequence = (int *) malloc(sizeof(int));
+    cudaMalloc((void **)&this->d_len_inputs_sequence, sizeof(int));
+    this->h_len_inputs_sequence[0] = len_inputs_sequence;
+    cudaMemcpy(this->d_len_inputs_sequence, this->h_len_inputs_sequence, sizeof(int), cudaMemcpyHostToDevice);
+
+    // vectors for input data (temporal sequence)
+    cudaMallocHost((void**)&this->h_inputs_sequence, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] *
+                   this->h_inp_size[2] * this->h_len_inputs_sequence[0]);
+    cudaMalloc((void **)&this->d_inputs_sequence, sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] *
+               this->h_inp_size[2] * this->h_len_inputs_sequence[0]);
+    for (int ch = 0; ch < this->h_inp_size[0]; ch++) {
+        for (int i = 0; i < this->h_inp_size[1] * this->h_inp_size[2]; i++) {
+            for (int d = 0; d < this->h_len_inputs_sequence[0]; d++) {
+                int idx = ch * this->h_inp_size[1] * this->h_inp_size[2] * this->h_len_inputs_sequence[0] +
+                        i * this->h_len_inputs_sequence[0] + d;
+                this->h_inputs_sequence[idx] = 0;
+            }
+        }
+    }
+    cudaMemcpy(this->d_inputs_sequence, this->h_inputs_sequence,
+               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
+               this->h_len_inputs_sequence[0], cudaMemcpyHostToDevice);
 
     // neuron and synapse params
     this->h_node_refrac = (float *) malloc(sizeof(float));
@@ -62,19 +84,22 @@ Network::Network(const int inp_size[3], const float inp_scale[2], const float si
 
 // destructor
 Network::~Network(){
-
     cudaFreeHost(this->h_inputs);
+    cudaFreeHost(this->h_inputs_sequence);
     free(this->h_inp_size);
     free(this->h_sim_step);
     free(this->h_node_refrac);
     free(this->h_synapse_trace_init);
     free(this->h_length_delay_inp);
+    free(this->h_len_inputs_sequence);
 
     cudaFree(this->d_inputs);
+    cudaFree(this->d_inputs_sequence);
     cudaFree(this->d_inp_size);
     cudaFree(this->d_sim_step);
     cudaFree(this->d_node_refrac);
     cudaFree(this->d_length_delay_inp);
+    cudaFree(this->d_len_inputs_sequence);
 
     // clean layer data
     cudaFreeHost(this->h_layers);
@@ -1092,20 +1117,18 @@ void Network::summary() {
 
 // update input spike trains
 void Network::update_input() {
-    update_input_trains<<<this->block_0, 1>>>(this->d_inputs, this->d_inp_size, this->d_length_delay_inp);
-    cudaMemcpy(this->h_inputs, this->d_inputs,
+    cudaMemcpy(this->d_inputs_sequence, this->h_inputs_sequence,
                sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyDeviceToHost);
+               this->h_len_inputs_sequence[0], cudaMemcpyHostToDevice);
 }
 
 
 // update network's state
 void Network::feed(bool& break_fun) {
 
-    // copy inputs to device
-    cudaMemcpy(this->d_inputs, this->h_inputs,
-               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
-               this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
+    // update input from sequence
+    update_input_trains<<<this->block_0, 1>>>(this->d_inputs, this->d_inputs_sequence, this->d_len_inputs_sequence,
+            this->d_inp_size, this->d_length_delay_inp);
 
     // enable learning
     if (this->learning)
@@ -1180,6 +1203,9 @@ void Network::feed(bool& break_fun) {
 
 // copy network's state from device to host memory
 void Network::copy_to_host(){
+    cudaMemcpy(this->h_inputs, this->d_inputs,
+               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
+               this->h_length_delay_inp[0], cudaMemcpyDeviceToHost);
 
     for (int l = 0; l < this->cnt_layers; l++) {
         cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
@@ -1307,6 +1333,23 @@ void Network::init(){
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
     cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+}
+
+
+// init input sequence
+void Network::init_input_sequence(){
+    for (int ch = 0; ch < this->h_inp_size[0]; ch++) {
+        for (int i = 0; i < this->h_inp_size[1] * this->h_inp_size[2]; i++) {
+            for (int d = 0; d < this->h_len_inputs_sequence[0]; d++) {
+                int idx = ch * this->h_inp_size[1] * this->h_inp_size[2] * this->h_len_inputs_sequence[0] +
+                          i * this->h_len_inputs_sequence[0] + d;
+                this->h_inputs_sequence[idx] = 0;
+            }
+        }
+    }
+    cudaMemcpy(this->d_inputs_sequence, this->h_inputs_sequence,
+               sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
+               this->h_len_inputs_sequence[0], cudaMemcpyHostToDevice);
 }
 
 

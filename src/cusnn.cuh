@@ -210,6 +210,12 @@ class Network {
         int *d_inp_size;
         float inp_scale[2];
 
+        // input data (temporal sequence)
+        int *h_inputs_sequence;
+        int *d_inputs_sequence;
+        int *h_len_inputs_sequence;
+        int *d_len_inputs_sequence;
+
         // input data
         int *h_inputs;
         int *d_inputs;
@@ -257,8 +263,8 @@ class Network {
         Layer** d_d_layers = NULL;
 
         /* FUNCTIONS */
-        Network(const int inp_size[3], const float inp_scale[2], const float sim_step, float node_refrac,
-                float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th);
+        Network(const int inp_size[3], const float inp_scale[2], int len_inputs_sequence, const float sim_step,
+                float node_refrac, float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th);
         ~Network();
 
         void add_layer(std::string layer_type, bool learning, bool load_weights, bool homeostasis, float Vth,
@@ -289,6 +295,7 @@ class Network {
         void copy_to_host();
         void summary();
         void init();
+        void init_input_sequence();
         void weights_to_device();
 };
 

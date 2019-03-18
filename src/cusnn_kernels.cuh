@@ -14,7 +14,7 @@
 #include <device_launch_parameters.h>
 
 
-__global__ void update_input_trains(int *inputs, int *input_size, int *delay);
+__global__ void update_input_trains(int *inputs, int *inputs_sequence, int *len_inputs_sequence, int *input_size, int *delay);
 __global__ void enable_learning(Layer **layers);
 __global__ void update_input_channels(Layer **layers, float *sim_step, int *inputs);
 __global__ void propagation(Layer **layers, int *inputs);

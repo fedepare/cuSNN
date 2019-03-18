@@ -2,7 +2,7 @@
 
 
 // update input spike trains
-__global__ void update_input_trains(int *inputs, int *input_size, int *delay) {
+__global__ void update_input_trains(int *inputs, int *inputs_sequence, int *len_inputs_sequence, int *input_size, int *delay) {
 
     int channel = blockIdx.x;
     int idx_y = blockIdx.y;
@@ -14,7 +14,16 @@ __global__ void update_input_trains(int *inputs, int *input_size, int *delay) {
 
     for (int i = end_vector - 1; i > begin_vector; i--)
         inputs[i] = inputs[i-1];
-    inputs[begin_vector] = 0;
+
+    int begin_sequence = channel * input_size[1] * input_size[2] * len_inputs_sequence[0] +
+            idx_node * len_inputs_sequence[0];
+    int end_sequence = channel * input_size[1] * input_size[2] * len_inputs_sequence[0] +
+            idx_node * len_inputs_sequence[0] + len_inputs_sequence[0];
+    inputs[begin_vector] = inputs_sequence[begin_sequence];
+
+    for (int i = begin_sequence; i < end_sequence - 1; ++i)
+        inputs_sequence[i] = inputs_sequence[i+1];
+    inputs_sequence[end_sequence-1] = 0;
 }
 
 
