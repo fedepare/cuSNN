@@ -12,7 +12,7 @@
 
 /* NETWORK CLASS */
 // constructor
-Network::Network(const int inp_size[3], const float inp_scale[2], int len_inputs_sequence, const float sim_step,
+Network::Network(const int inp_size[3], const float inp_scale[2], float len_inputs_sequence, const float sim_step,
                  float node_refrac, float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th) {
 
     this->cnt_layers = 0;
@@ -37,7 +37,7 @@ Network::Network(const int inp_size[3], const float inp_scale[2], int len_inputs
     // length of input sequence
     this->h_len_inputs_sequence = (int *) malloc(sizeof(int));
     cudaMalloc((void **)&this->d_len_inputs_sequence, sizeof(int));
-    this->h_len_inputs_sequence[0] = len_inputs_sequence;
+    this->h_len_inputs_sequence[0] = (int) (len_inputs_sequence / this->h_sim_step[0]);
     cudaMemcpy(this->d_len_inputs_sequence, this->h_len_inputs_sequence, sizeof(int), cudaMemcpyHostToDevice);
 
     // vectors for input data (temporal sequence)

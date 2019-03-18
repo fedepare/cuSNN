@@ -263,7 +263,7 @@ class Network {
         Layer** d_d_layers = NULL;
 
         /* FUNCTIONS */
-        Network(const int inp_size[3], const float inp_scale[2], int len_inputs_sequence, const float sim_step,
+        Network(const int inp_size[3], const float inp_scale[2], float len_inputs_sequence, const float sim_step,
                 float node_refrac, float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th);
         ~Network();
 
