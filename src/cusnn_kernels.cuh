@@ -15,15 +15,15 @@
 
 
 __global__ void update_input_trains(int *inputs, int *inputs_sequence, int *len_inputs_sequence, int *input_size, int *delay);
-__global__ void enable_learning(Layer **layers);
+__global__ void enable_learning(Layer **layers, bool *limit_learning);
 __global__ void update_input_channels(Layer **layers, float *sim_step, int *inputs);
 __global__ void propagation(Layer **layers, int *inputs);
 __global__ void add_input(Layer **layers);
 __global__ void update_V(Layer **layers, float *sim_step, float *refrac);
 __global__ void spatial_firing_node_kernel_channel(Layer **layers);
 __global__ void spatial_firing_node_kernel(Layer **layers);
-__global__ void spatial_firing_node(Layer **layers);
-__global__ void spatial_perpendicular_inhibition(Layer **layers);
+__global__ void spatial_firing_node(Layer **layers, int *kernel_max);
+__global__ void spatial_perpendicular_inhibition(Layer **layers, int *kernel_max);
 __global__ void stdp_paredes_kernel_channel(Layer **layers);
 __global__ void stdp_shrestha_kernel_channel(Layer **layers);
 __global__ void stdp_gerstner_kernel_channel(Layer **layers);
@@ -37,7 +37,7 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers);
 __global__ void stdp_paredes_track_convergence(Layer **layers);
 __global__ void update_output_channels(Layer **layers);
 __global__ void update_output(Layer **layers, float *sim_step);
-__global__ void learning_limit_updates(Layer **layers);
+__global__ void learning_limit_updates(Layer **layers, bool *limit_learning);
 
 
 #endif

@@ -28,14 +28,14 @@ __global__ void update_input_trains(int *inputs, int *inputs_sequence, int *len_
 
 
 // enable STDP when the simulation time is larger than the maximum input delay
-__global__ void enable_learning(Layer **layers) {
+__global__ void enable_learning(Layer **layers, bool *limit_learning) {
 
     int layer = blockIdx.x;
 
     if (layers[layer]->enable_learning &&
         layers[layer]->learning_type &&
         !layers[layer]->learning &&
-        !layers[layer]->limit_learning) {
+        !limit_learning[layer]) {
 
         if (layers[layer]->enable_learning_cnt > layers[layer]->learning_warmup_time)
             layers[layer]->learning = true;
@@ -398,11 +398,11 @@ __global__ void spatial_firing_node_kernel(Layer **layers) {
 
 
 // STDP select firing node
-__global__ void spatial_firing_node(Layer **layers) {
+__global__ void spatial_firing_node(Layer **layers, int *kernel_max_layer) {
 
     int layer = blockIdx.x;
 
-    layers[layer]->kernel_max = -1;
+    kernel_max_layer[layer] = -1;
     if (layers[layer]->active &&
         layers[layer]->firing_node &&
         layers[layer]->inhibition &&
@@ -414,23 +414,23 @@ __global__ void spatial_firing_node(Layer **layers) {
         for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
             if (layers[layer]->d_d_kernels[k]->V_max > V_max) {
                 V_max = layers[layer]->d_d_kernels[k]->V_max;
-                layers[layer]->kernel_max = k;
+                kernel_max_layer[layer] = k;
             }
         }
 
-        if (layers[layer]->kernel_max != -1) {
-            int node = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->node_max;
-            int channel = layers[layer]->d_d_kernels[layers[layer]->kernel_max]->channel_max;
+        if (kernel_max_layer[layer] != -1) {
+            int node = layers[layer]->d_d_kernels[kernel_max_layer[layer]]->node_max;
+            int channel = layers[layer]->d_d_kernels[kernel_max_layer[layer]]->channel_max;
             int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
-            layers[layer]->d_d_kernels[layers[layer]->kernel_max]->d_nodesep_perpendicular[idx_nodesep] = 0;
-            layers[layer]->d_d_kernels[layers[layer]->kernel_max]->learning_trigger = true;
+            layers[layer]->d_d_kernels[kernel_max_layer[layer]]->d_nodesep_perpendicular[idx_nodesep] = 0;
+            layers[layer]->d_d_kernels[kernel_max_layer[layer]]->learning_trigger = true;
         }
     }
 }
 
 
 // STDP perpendicular inhibition
-__global__ void spatial_perpendicular_inhibition(Layer **layers) {
+__global__ void spatial_perpendicular_inhibition(Layer **layers, int *kernel_max_layer) {
 
     int layer = blockIdx.x;
     int channel = blockIdx.y;
@@ -442,12 +442,12 @@ __global__ void spatial_perpendicular_inhibition(Layer **layers) {
         layers[layer]->inhibition &&
         layers[layer]->inhibition_spatial &&
         layers[layer]->firing_node &&
-        layers[layer]->kernel_max != -1 &&
+        kernel_max_layer[layer] != -1 &&
         layers[layer]->inp_size[0] > channel &&
         layers[layer]->cnt_kernels > kernel &&
         ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
 
-        int kernel_max = layers[layer]->kernel_max;
+        int kernel_max = kernel_max_layer[layer];
         int channel_max = layers[layer]->d_d_kernels[kernel_max]->channel_max;
         int node_max = layers[layer]->d_d_kernels[kernel_max]->node_max;
         int idx_x_rf = node_max / layers[layer]->out_size[1];
@@ -1469,7 +1469,7 @@ __global__ void update_output(Layer **layers, float *sim_step) {
 
 
 // limit the number of STDP updates
-__global__ void learning_limit_updates(Layer **layers) {
+__global__ void learning_limit_updates(Layer **layers, bool *limit_learning) {
 
     int layer = blockIdx.x;
 
@@ -1493,7 +1493,7 @@ __global__ void learning_limit_updates(Layer **layers) {
             layers[layer]->learning_limit_updates > 0) {
             layers[layer]->learning_updates_cnt = 0;
             layers[layer]->learning = false;
-            layers[layer]->limit_learning = true;
+            limit_learning[layer] = true;
         }
     }
 }

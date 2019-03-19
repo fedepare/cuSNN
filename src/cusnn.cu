@@ -613,7 +613,6 @@ void Network::create_network(bool& break_fun) {
             this->h_layers[l]->enable_learning = true;
             this->h_layers[l]->enable_learning_cnt = 0;
         }
-        this->h_layers[l]->limit_learning = false;
         this->h_layers[l]->learning_updates_cnt = 0;
         this->h_layers[l]->learning_warmup_time = 0;
         for (int l2 = 0; l2 <= l; l2++) {
@@ -670,6 +669,15 @@ void Network::create_network(bool& break_fun) {
     cudaMemcpy(this->d_inputs, this->h_inputs,
                sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
                this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
+
+    // zero-copy variables
+    cudaHostAlloc((void **)&this->h_kernel_max, sizeof(int) * this->cnt_layers, cudaHostAllocMapped);
+    cudaHostGetDevicePointer((void **)&this->d_kernel_max,  (void *) this->h_kernel_max, 0);
+
+    cudaHostAlloc((void **)&this->h_limit_learning, sizeof(bool) * this->cnt_layers, cudaHostAllocMapped);
+    for (int l = 0; l < this->cnt_layers; l++)
+        this->h_limit_learning[l] = false;
+    cudaHostGetDevicePointer((void **)&this->d_limit_learning,  (void *) this->h_limit_learning, 0);
 
     // get maximums dimensions for CUDA kernels
     this->max_inputs = 0;
@@ -1128,11 +1136,11 @@ void Network::feed(bool& break_fun) {
 
     // update input from sequence
     update_input_trains<<<this->block_0, 1>>>(this->d_inputs, this->d_inputs_sequence, this->d_len_inputs_sequence,
-            this->d_inp_size, this->d_length_delay_inp);
+                                              this->d_inp_size, this->d_length_delay_inp);
 
     // enable learning
     if (this->learning)
-        enable_learning<<<this->block_1, 1>>>(this->d_d_layers);
+        enable_learning<<<this->block_1, 1>>>(this->d_d_layers, this->d_limit_learning);
 
     // update spike trains for input channels
     update_input_channels<<<this->block_2, this->thread_1>>>(this->d_d_layers, this->d_sim_step, this->d_inputs);
@@ -1147,13 +1155,13 @@ void Network::feed(bool& break_fun) {
     while (inhibition && this->learning) {
         spatial_firing_node_kernel_channel<<<this->block_5, this->thread_0>>>(this->d_d_layers);
         spatial_firing_node_kernel<<<this->block_1, this->thread_0>>>(this->d_d_layers);
-        spatial_firing_node<<<this->block_1, 1>>>(this->d_d_layers);
-        spatial_perpendicular_inhibition<<<this->block_5, this->thread_0>>>(this->d_d_layers);
+        spatial_firing_node<<<this->block_1, 1>>>(this->d_d_layers, this->d_kernel_max);
+        spatial_perpendicular_inhibition<<<this->block_5, this->thread_0>>>(this->d_d_layers, this->d_kernel_max);
 
         inhibition = false;
+        cudaDeviceSynchronize();
         for (int l = 0; l < this->cnt_layers; l++) {
-            cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
-            if (this->h_layers[l]->kernel_max != -1) inhibition = true;
+            if (this->h_kernel_max[l] != -1) inhibition = true;
         }
     }
 
@@ -1191,10 +1199,10 @@ void Network::feed(bool& break_fun) {
 
     // limit learning updates
     if (this->learning) {
-        learning_limit_updates<<<this->block_1, 1>>>(this->d_d_layers);
+        learning_limit_updates<<<this->block_1, 1>>>(this->d_d_layers, this->d_limit_learning);
+        cudaDeviceSynchronize();
         for (int l = 0; l < this->cnt_layers; l++) {
-            cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
-            if (this->h_layers[l]->limit_learning) break_fun = true;
+            if (this->h_limit_learning[l]) break_fun = true;
         }
     }
 }
@@ -1261,7 +1269,7 @@ void Network::init(){
         this->h_layers[l]->firing_node = false;
         if (this->h_layers[l]->enable_learning) {
             this->h_layers[l]->learning = false;
-            this->h_layers[l]->limit_learning = false;
+            this->h_limit_learning[l] = false;
             this->h_layers[l]->learning_updates_cnt = 0;
             this->h_layers[l]->enable_learning_cnt = 0;
         }

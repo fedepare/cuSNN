@@ -136,7 +136,6 @@ class Layer {
         int out_nodesep_kernel;
 
         // perpendicular inhibition
-        int kernel_max;
         int neigh_inh;
         int *d_max_kernel;
         bool inhibition;
@@ -147,7 +146,6 @@ class Layer {
 
         // learning params
         bool learning;
-        bool limit_learning;
         bool enable_learning;
         bool inhibition_spatial;
         bool *h_kernels_cnvg;
@@ -240,6 +238,12 @@ class Network {
         // learning params
         bool learning;
         int learning_type;
+
+        // zero-copy variables
+        int *h_kernel_max;
+        int *d_kernel_max;
+        bool *h_limit_learning;
+        bool *d_limit_learning;
 
         // CUDA blocks and threads dimensions
         int max_inputs;
