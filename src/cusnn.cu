@@ -15,9 +15,12 @@
 /* NETWORK CLASS */
 // constructor
 Network::Network(const int inp_size[3], const float inp_scale[2], const float sim_step, float node_refrac,
-                 float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th) {
+                 float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th,
+                 const int histogram_type) {
 
-    this->cnt_layers = 0;
+    this->h_cnt_layers = (int *) malloc(sizeof(int));
+    cudaMalloc((void **)&this->d_cnt_layers, sizeof(int));
+    this->h_cnt_layers[0] = 0;
 
     // simulation timestep
     this->h_sim_step = (float *) malloc(sizeof(float));
@@ -57,6 +60,12 @@ Network::Network(const int inp_size[3], const float inp_scale[2], const float si
     // learning params
     this->learning = false;
     this->learning_type = 0;
+
+    // histogram type
+    this->h_histogram_type = (int *) malloc(sizeof(int));
+    cudaMalloc((void **)&this->d_histogram_type, sizeof(int));
+    this->h_histogram_type[0] = histogram_type;
+    cudaMemcpy(this->d_histogram_type, this->h_histogram_type, sizeof(int), cudaMemcpyHostToDevice);
 }
 
 
@@ -69,12 +78,18 @@ Network::~Network(){
     free(this->h_node_refrac);
     free(this->h_synapse_trace_init);
     free(this->h_length_delay_inp);
+    free(this->h_histogram);
+    free(this->h_histogram_type);
+    free(this->h_cnt_layers);
 
     cudaFree(this->d_inputs);
     cudaFree(this->d_inp_size);
     cudaFree(this->d_sim_step);
     cudaFree(this->d_node_refrac);
     cudaFree(this->d_length_delay_inp);
+    cudaFree(this->d_histogram);
+    cudaFree(this->d_histogram_type);
+    cudaFree(this->d_cnt_layers);
 
     // clean layer data
     free(this->h_layers);
@@ -88,10 +103,10 @@ void Network::add_layer(std::string layer_type, bool learning, bool load_weights
                         float decay, float alpha, float max_delay, int num_delays, float synapse_inh_scaling,
                         int rf_side, int out_channels, std::string padding, float w_init) {
 
-    this->h_layers[this->cnt_layers] = new Layer(layer_type, learning, load_weights, homeostasis, Vth, decay,
+    this->h_layers[this->h_cnt_layers[0]] = new Layer(layer_type, learning, load_weights, homeostasis, Vth, decay,
                                                  alpha, max_delay, num_delays, synapse_inh_scaling, rf_side,
                                                  out_channels, padding, w_init, this->h_sim_step[0]);
-    this->cnt_layers++;
+    this->h_cnt_layers[0]++;
 }
 
 
@@ -411,7 +426,8 @@ void Network::modify_kernels_merge(int l) {
 // create network
 void Network::create_network(bool& break_fun) {
 
-    for (int l = 0; l < this->cnt_layers; l++) {
+    cudaMemcpy(this->d_cnt_layers, this->h_cnt_layers, sizeof(int), cudaMemcpyHostToDevice);
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
 
         // check layer parameters
         if (this->h_layers[l]->layer_type < 0) {
@@ -473,7 +489,7 @@ void Network::create_network(bool& break_fun) {
         this->h_layers[l]->kernel_channels = this->h_layers[l]->inp_size[0];
 
         // output synaptic delay
-        if (l != this->cnt_layers - 1)
+        if (l != this->h_cnt_layers[0] - 1)
             this->h_layers[l]->length_delay_out = this->h_layers[l+1]->length_delay_inp;
         else
             this->h_layers[l]->length_delay_out = this->h_layers[l]->length_delay_inp;
@@ -612,19 +628,36 @@ void Network::create_network(bool& break_fun) {
                    sizeof(Kernel*) * this->h_layers[l]->out_size[0], cudaMemcpyHostToDevice);
     }
 
+    // histograms
+    this->length_histogram = 0;
+    if (this->h_cnt_layers[0] && this->h_histogram_type[0] > 0) {
+        if (this->h_histogram_type[0] == 1) { // normal histogram
+            this->length_histogram = this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels *
+                    this->h_layers[this->h_cnt_layers[0]-1]->out_size[1] * this->h_layers[this->h_cnt_layers[0]-1]->out_size[2];
+        } else if (this->h_histogram_type[0] == 2) { // SPM histogram
+            for (int l = 0; l < 3; l++)
+                this->length_histogram += this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels * (int) pow(2, l) * (int) pow(2, l);
+        }
+    }
+    this->h_histogram = (int *) malloc(sizeof(int) * this->length_histogram);
+    cudaMalloc((void **)&this->d_histogram, sizeof(int) * this->length_histogram);
+    for (int i = 0; i < this->length_histogram; i++)
+        this->h_histogram[i] = 0;
+    cudaMemcpy(this->d_histogram, this->h_histogram, sizeof(int) * this->length_histogram, cudaMemcpyHostToDevice);
+
     // network structure device versions
-    this->h_d_layers = (Layer **) malloc(sizeof(Layer*) * this->cnt_layers);
-    for (int i = 0; i < this->cnt_layers; i++) {
+    this->h_d_layers = (Layer **) malloc(sizeof(Layer*) * this->h_cnt_layers[0]);
+    for (int i = 0; i < this->h_cnt_layers[0]; i++) {
         cudaMalloc((void**)&this->h_d_layers[i], sizeof(Layer));
         cudaMemcpy(this->h_d_layers[i], this->h_layers[i], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMalloc((void**)&this->d_d_layers, sizeof(Layer*) * this->cnt_layers);
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMalloc((void**)&this->d_d_layers, sizeof(Layer*) * this->h_cnt_layers[0]);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 
     // synapse delay for input data
     this->h_length_delay_inp = (int *) malloc(sizeof(int));
     cudaMalloc((void **)&this->d_length_delay_inp, sizeof(int));
-    if (this->cnt_layers > 0) this->h_length_delay_inp[0] = this->h_layers[0]->length_delay_inp;
+    if (this->h_cnt_layers[0] > 0) this->h_length_delay_inp[0] = this->h_layers[0]->length_delay_inp;
     else this->h_length_delay_inp[0] = 1;
     cudaMemcpy(this->d_length_delay_inp, this->h_length_delay_inp, sizeof(int), cudaMemcpyHostToDevice);
 
@@ -652,7 +685,7 @@ void Network::create_network(bool& break_fun) {
     this->max_kernels = 0;
     this->max_outputs = 0;
     this->max_delays = 0;
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (this->max_inputs < this->h_layers[l]->inp_node_kernel)
             this->max_inputs = this->h_layers[l]->inp_node_kernel;
         if (this->max_channels < this->h_layers[l]->inp_size[0])
@@ -690,22 +723,22 @@ void Network::create_network(bool& break_fun) {
     this->block_0 = dim3((unsigned int) this->h_inp_size[0],
                          (unsigned int) this->h_inp_size[1],
                          (unsigned int) this->h_inp_size[2]);
-    this->block_1 = dim3((unsigned int) this->cnt_layers,
+    this->block_1 = dim3((unsigned int) this->h_cnt_layers[0],
                          1,
                          1);
-    this->block_2 = dim3((unsigned int) this->cnt_layers,
+    this->block_2 = dim3((unsigned int) this->h_cnt_layers[0],
                          (unsigned int) this->max_inputs,
                          (unsigned int) this->max_channels);
-    this->block_3 = dim3((unsigned int) this->cnt_layers,
+    this->block_3 = dim3((unsigned int) this->h_cnt_layers[0],
                          (unsigned int) this->max_outputs,
                          (unsigned int) this->max_channels);
-    this->block_4 = dim3((unsigned int) this->cnt_layers,
+    this->block_4 = dim3((unsigned int) this->h_cnt_layers[0],
                          (unsigned int) this->max_outputs,
                          1);
-    this->block_5 = dim3((unsigned int) this->cnt_layers,
+    this->block_5 = dim3((unsigned int) this->h_cnt_layers[0],
                          (unsigned int) this->max_channels,
                          1);
-    this->block_6 = dim3((unsigned int) this->cnt_layers,
+    this->block_6 = dim3((unsigned int) this->h_cnt_layers[0],
                          (unsigned int) this->max_channels,
                          (unsigned int) this->max_delays);
     this->thread_0 = dim3((unsigned int) this->max_kernels,
@@ -745,7 +778,7 @@ void Network::enable_stdp_paredes(float learning_rate, float scale_a, float conv
     }
 
     this->learning_type = 1;
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (!this->h_layers[l]->enable_learning) continue;
         this->h_layers[l]->learning_type = this->learning_type;
         this->h_layers[l]->learning_rate = learning_rate;
@@ -792,7 +825,7 @@ void Network::enable_stdp_paredes(float learning_rate, float scale_a, float conv
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
@@ -820,7 +853,7 @@ void Network::enable_stdp_shrestha(float learning_rate, float window_LTP, bool w
     }
 
     this->learning_type = 2;
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (!this->h_layers[l]->enable_learning) continue;
         this->h_layers[l]->learning_type = this->learning_type;
         this->h_layers[l]->learning_rate = learning_rate;
@@ -860,7 +893,7 @@ void Network::enable_stdp_shrestha(float learning_rate, float window_LTP, bool w
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
@@ -893,7 +926,7 @@ void Network::enable_stdp_gerstner(float learning_rate_exc, float window_LTP, fl
     }
 
     this->learning_type = 3;
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (!this->h_layers[l]->enable_learning) continue;
         this->h_layers[l]->learning_type = this->learning_type;
         this->h_layers[l]->learning_rate = learning_rate_exc;
@@ -945,7 +978,7 @@ void Network::enable_stdp_gerstner(float learning_rate_exc, float window_LTP, fl
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
@@ -965,7 +998,7 @@ void Network::enable_stdp_kheradpisheh(float learning_rate_exc, int limit_update
     }
 
     this->learning_type = 4;
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (!this->h_layers[l]->enable_learning) continue;
         this->h_layers[l]->learning_type = this->learning_type;
         this->h_layers[l]->learning_rate = learning_rate_exc;
@@ -1012,7 +1045,7 @@ void Network::enable_stdp_kheradpisheh(float learning_rate_exc, int limit_update
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
@@ -1026,7 +1059,7 @@ void Network::enable_adaptive_threshold_diehl(float threshold_delta, bool& break
         return;
     }
 
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         this->h_layers[l]->threshold_diehl = true;
         this->h_layers[l]->threshold_diehl_increase = threshold_delta;
         if (this->h_layers[l]->homeostasis && this->h_layers[l]->threshold_diehl)
@@ -1050,7 +1083,7 @@ void Network::enable_adaptive_threshold_diehl(float threshold_delta, bool& break
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
@@ -1063,7 +1096,7 @@ void Network::summary() {
     printf("==========================================================\n");
     printf("Input \t\t\t (%i, %i, %i)\n", this->h_inp_size[0], this->h_inp_size[1], this->h_inp_size[2]);
     printf("----------------------------------------------------------\n");
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         int params = this->h_layers[l]->inp_size[0] *
                 (this->h_layers[l]->rf_side - this->h_layers[l]->rf_side_limits[0]) *
                 (this->h_layers[l]->rf_side - this->h_layers[l]->rf_side_limits[1]) * this->h_layers[l]->num_delays;
@@ -1083,7 +1116,7 @@ void Network::summary() {
                this->h_layers[l]->synapse_inh_scaling > 0.f ? 2 : 1, this->h_layers[l]->num_delays,
                this->h_layers[l]->rf_side - this->h_layers[l]->rf_side_limits[0],
                this->h_layers[l]->rf_side - this->h_layers[l]->rf_side_limits[1]);
-        if (l != this->cnt_layers - 1)
+        if (l != this->h_cnt_layers[0] - 1)
             printf("----------------------------------------------------------\n");
         else
             printf("==========================================================\n");
@@ -1093,7 +1126,7 @@ void Network::summary() {
     printf("Trainable params: %i\n", trainable);
     printf("Non-trainable params: %i\n\n", nontrainable);
 
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         if (this->h_layers[l]->enable_learning && this->h_layers[l]->learning_type == 0)
             printf("Warning Layer %i: Learning enabled but rule not selected.\n\n", l);
         else if (this->h_layers[l]->enable_learning && this->h_layers[l]->learning_type == 1)
@@ -1151,14 +1184,13 @@ void Network::feed(bool& break_fun) {
         spatial_perpendicular_inhibition<<<this->block_5, this->thread_0>>>(this->d_d_layers);
 
         inhibition = false;
-        for (int l = 0; l < this->cnt_layers; l++) {
+        for (int l = 0; l < this->h_cnt_layers[0]; l++) {
             cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
             if (this->h_layers[l]->kernel_max != -1) inhibition = true;
         }
     }
 
     // perpendicular inhibition
-    inhibition = this->inhibition;
     if (inhibition) {
         firing_node_kernel<<<this->block_4, this->thread_0>>>(this->d_d_layers);
         firing_node<<<this->block_4, 1>>>(this->d_d_layers);
@@ -1188,12 +1220,13 @@ void Network::feed(bool& break_fun) {
 
     // update outputs
     update_output_channels<<<this->block_3, this->thread_0>>>(this->d_d_layers);
-    update_output<<<this->block_4, this->thread_0>>>(this->d_d_layers, this->d_sim_step);
+    update_output<<<this->block_4, this->thread_0>>>(this->d_d_layers, this->d_sim_step, this->d_histogram,
+            this->d_histogram_type, this->d_cnt_layers);
 
     // limit learning updates
     if (this->learning) {
         learning_limit_updates<<<this->block_1, 1>>>(this->d_d_layers);
-        for (int l = 0; l < this->cnt_layers; l++) {
+        for (int l = 0; l < this->h_cnt_layers[0]; l++) {
             cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
             if (this->h_layers[l]->limit_learning) break_fun = true;
         }
@@ -1204,10 +1237,13 @@ void Network::feed(bool& break_fun) {
 // copy network's state from device to host memory
 void Network::copy_to_host(){
 
-    for (int l = 0; l < this->cnt_layers; l++) {
+    // histogram
+    cudaMemcpy(this->h_histogram, this->d_histogram, sizeof(int) * this->length_histogram, cudaMemcpyDeviceToHost);
+
+    // layer data
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         cudaMemcpy(this->h_layers[l], this->h_d_layers[l], sizeof(Layer), cudaMemcpyDeviceToHost);
 
-        // layer data
         cudaMemcpy(this->h_layers[l]->h_kernels_cnvg, this->h_layers[l]->d_kernels_cnvg,
                    sizeof(bool) * this->h_layers[l]->cnt_kernels, cudaMemcpyDeviceToHost);
 
@@ -1252,8 +1288,13 @@ void Network::init(){
                sizeof(int) * this->h_inp_size[0] * this->h_inp_size[1] * this->h_inp_size[2] *
                this->h_length_delay_inp[0], cudaMemcpyHostToDevice);
 
+    // histogram
+    for (int i = 0; i < this->length_histogram; i++)
+        this->h_histogram[i] = 0;
+    cudaMemcpy(this->d_histogram, this->h_histogram, sizeof(int) * this->length_histogram, cudaMemcpyHostToDevice);
+
     // layer data
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
 
         this->h_layers[l]->active = false;
         this->h_layers[l]->firing_node = false;
@@ -1329,14 +1370,14 @@ void Network::init(){
                    sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }
 
 
 // weights to device
 void Network::weights_to_device() {
 
-    for (int l = 0; l < this->cnt_layers; l++) {
+    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++) {
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_exc, this->h_layers[l]->h_kernels[k]->h_weights_exc,
                        sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
@@ -1355,5 +1396,5 @@ void Network::weights_to_device() {
                    sizeof(bool) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
         cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
     }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->cnt_layers, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
 }

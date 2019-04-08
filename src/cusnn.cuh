@@ -203,7 +203,8 @@ class Network {
     public:
 
         // number of layers
-        int cnt_layers;
+        int *h_cnt_layers;
+        int *d_cnt_layers;
 
         // input size
         int *h_inp_size;
@@ -235,6 +236,13 @@ class Network {
         bool learning;
         int learning_type;
 
+        // histograms
+        int *h_histogram;
+        int *d_histogram;
+        int *h_histogram_type;
+        int *d_histogram_type;
+        int length_histogram;
+
         // CUDA blocks and threads dimensions
         int max_inputs;
         int max_channels;
@@ -258,7 +266,8 @@ class Network {
 
         /* FUNCTIONS */
         Network(const int inp_size[3], const float inp_scale[2], const float sim_step, float node_refrac,
-                float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th);
+                float synapse_trace_init, bool inhibition, bool drop_delays, float drop_delays_th,
+                const int histogram_type);
         ~Network();
 
         void add_layer(std::string layer_type, bool learning, bool load_weights, bool homeostasis, float Vth,
