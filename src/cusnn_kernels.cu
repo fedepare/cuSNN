@@ -1476,12 +1476,12 @@ __global__ void update_SPM_histogram(Layer **layers, int *histogram, int *histog
             int cols = i / layers[layer]->out_size[1];
             int rows = i % layers[layer]->out_size[1];
             for (int level = 0; level < 3; level++) {
-                int row_SPM = (int) pow(2., (float) level) * rows / layers[layer]->out_size[1];
-                int col_SPM = (int) pow(2., (float) level) * cols / layers[layer]->out_size[2];
+                int row_SPM = (int) pow(2.f, (float) level) * rows / layers[layer]->out_size[1];
+                int col_SPM = (int) pow(2.f, (float) level) * cols / layers[layer]->out_size[2];
                 if (row_SPM <= level && col_SPM <= level) {
-                    int idx = kernel * (int) pow(2., 2*level) + row_SPM * (int) pow(2., (float) level) + col_SPM;
+                    int idx = kernel * (int) pow(2.f, (float) 2*level) + row_SPM * (int) pow(2.f, (float) level) + col_SPM;
                     for (int level_aux = 0; level_aux < level; level_aux++)
-                        idx += layers[layer]->cnt_kernels * (int) pow(2., (float) 2*level_aux);
+                        idx += layers[layer]->cnt_kernels * (int) pow(2.f, (float) 2*level_aux);
                     histogram_SPM[idx] += histogram[kernel * layers[layer]->out_node_kernel + i];
                 }
             }
