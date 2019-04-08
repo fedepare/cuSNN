@@ -239,9 +239,12 @@ class Network {
         // histograms
         int *h_histogram;
         int *d_histogram;
+        int *h_histogram_SPM;
+        int *d_histogram_SPM;
         int *h_histogram_type;
         int *d_histogram_type;
         int length_histogram;
+        int length_histogram_SPM;
 
         // CUDA blocks and threads dimensions
         int max_inputs;
@@ -295,6 +298,7 @@ class Network {
 
         void feed(bool& break_fun);
         void update_input();
+        void update_SPM();
         void copy_to_host();
         void summary();
         void init();

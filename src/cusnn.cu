@@ -79,6 +79,7 @@ Network::~Network(){
     free(this->h_synapse_trace_init);
     free(this->h_length_delay_inp);
     free(this->h_histogram);
+    free(this->h_histogram_SPM);
     free(this->h_histogram_type);
     free(this->h_cnt_layers);
 
@@ -88,6 +89,7 @@ Network::~Network(){
     cudaFree(this->d_node_refrac);
     cudaFree(this->d_length_delay_inp);
     cudaFree(this->d_histogram);
+    cudaFree(this->d_histogram_SPM);
     cudaFree(this->d_histogram_type);
     cudaFree(this->d_cnt_layers);
 
@@ -630,20 +632,25 @@ void Network::create_network(bool& break_fun) {
 
     // histograms
     this->length_histogram = 0;
+    this->length_histogram_SPM = 0;
     if (this->h_cnt_layers[0] && this->h_histogram_type[0] > 0) {
-        if (this->h_histogram_type[0] == 1) { // normal histogram
-            this->length_histogram = this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels *
-                    this->h_layers[this->h_cnt_layers[0]-1]->out_size[1] * this->h_layers[this->h_cnt_layers[0]-1]->out_size[2];
-        } else if (this->h_histogram_type[0] == 2) { // SPM histogram
+        this->length_histogram = this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels *
+                this->h_layers[this->h_cnt_layers[0]-1]->out_size[1] * this->h_layers[this->h_cnt_layers[0]-1]->out_size[2];
+        if (this->h_histogram_type[0] == 2) {
             for (int l = 0; l < 3; l++)
-                this->length_histogram += this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels * (int) pow(2, l) * (int) pow(2, l);
+                this->length_histogram_SPM += this->h_layers[this->h_cnt_layers[0]-1]->cnt_kernels * (int) pow(2, 2*l);
         }
     }
     this->h_histogram = (int *) malloc(sizeof(int) * this->length_histogram);
+    this->h_histogram_SPM = (int *) malloc(sizeof(int) * this->length_histogram_SPM);
     cudaMalloc((void **)&this->d_histogram, sizeof(int) * this->length_histogram);
+    cudaMalloc((void **)&this->d_histogram_SPM, sizeof(int) * this->length_histogram_SPM);
     for (int i = 0; i < this->length_histogram; i++)
         this->h_histogram[i] = 0;
+    for (int i = 0; i < this->length_histogram_SPM; i++)
+        this->h_histogram_SPM[i] = 0;
     cudaMemcpy(this->d_histogram, this->h_histogram, sizeof(int) * this->length_histogram, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_histogram_SPM, this->h_histogram_SPM, sizeof(int) * this->length_histogram_SPM, cudaMemcpyHostToDevice);
 
     // network structure device versions
     this->h_d_layers = (Layer **) malloc(sizeof(Layer*) * this->h_cnt_layers[0]);
@@ -1234,11 +1241,18 @@ void Network::feed(bool& break_fun) {
 }
 
 
+// update SPM histogram
+void Network::update_SPM(){
+    update_SPM_histogram<<<this->block_1, this->thread_0>>>(this->d_d_layers, this->d_histogram, this->d_histogram_SPM);
+}
+
+
 // copy network's state from device to host memory
 void Network::copy_to_host(){
 
     // histogram
     cudaMemcpy(this->h_histogram, this->d_histogram, sizeof(int) * this->length_histogram, cudaMemcpyDeviceToHost);
+    cudaMemcpy(this->h_histogram_SPM, this->d_histogram_SPM, sizeof(int) * this->length_histogram_SPM, cudaMemcpyDeviceToHost);
 
     // layer data
     for (int l = 0; l < this->h_cnt_layers[0]; l++) {
@@ -1291,7 +1305,10 @@ void Network::init(){
     // histogram
     for (int i = 0; i < this->length_histogram; i++)
         this->h_histogram[i] = 0;
+    for (int i = 0; i < this->length_histogram_SPM; i++)
+        this->h_histogram_SPM[i] = 0;
     cudaMemcpy(this->d_histogram, this->h_histogram, sizeof(int) * this->length_histogram, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_histogram_SPM, this->h_histogram_SPM, sizeof(int) * this->length_histogram_SPM, cudaMemcpyHostToDevice);
 
     // layer data
     for (int l = 0; l < this->h_cnt_layers[0]; l++) {

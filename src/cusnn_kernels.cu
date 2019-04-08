@@ -1448,23 +1448,8 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
                 layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
 
                 // histograms (only for out_maps == 0)
-                if (!ch && layer == cnt_layers[0] - 1 && histogram_type[0] == 1) { // normal histogram
+                if (!ch && layer == cnt_layers[0]-1 && histogram_type[0] > 0)
                     histogram[kernel * layers[layer]->out_node_kernel + node] += 1;
-                } else if (!ch && layer == cnt_layers[0] - 1 && histogram_type[0] == 2) { // SPM histogram
-                    int rows = node / layers[layer]->out_size[1];
-                    int cols = node % layers[layer]->out_size[1];
-                    for (int level = 0; level < 3; level++) {
-                        int row_SPM = (int) pow(2, level) * rows / layers[layer]->out_size[1];
-                        int col_SPM = (int) pow(2, level) * cols / layers[layer]->out_size[2];
-                        if (row_SPM <= level && col_SPM <= level) {
-                            int idx = kernel * (int) pow(2, level) * (int) pow(2, level) +
-                                    row_SPM * (int) pow(2, level) + col_SPM;
-                            for (int level_aux = 0; level_aux < level; level_aux++)
-                                idx += layers[layer]->cnt_kernels * (int) pow(2, level_aux) * (int) pow(2, level_aux);
-                            histogram[idx] += 1;
-                        }
-                    }
-                }
             }
         }
 
@@ -1474,6 +1459,33 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
                  (float) layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector]);
         if (layers[layer]->d_d_kernels[kernel]->d_node_posttrace[node] < 0.f)
             layers[layer]->d_d_kernels[kernel]->d_node_posttrace[node] = 0.f;
+    }
+}
+
+
+// update SPM histogram
+__global__ void update_SPM_histogram(Layer **layers, int *histogram, int *histogram_SPM) {
+
+    int layer = blockIdx.x;
+    int kernel = threadIdx.x;
+
+    if (layers[layer]->active &&
+        layers[layer]->cnt_kernels > kernel) {
+
+        for (int i = 0; i < layers[layer]->out_node_kernel; i++) {
+            int cols = i / layers[layer]->out_size[1];
+            int rows = i % layers[layer]->out_size[1];
+            for (int level = 0; level < 3; level++) {
+                int row_SPM = (int) pow(2, level) * rows / layers[layer]->out_size[1];
+                int col_SPM = (int) pow(2, level) * cols / layers[layer]->out_size[2];
+                if (row_SPM <= level && col_SPM <= level) {
+                    int idx = kernel * (int) pow(2, 2*level) + row_SPM * (int) pow(2, level) + col_SPM;
+                    for (int level_aux = 0; level_aux < level; level_aux++)
+                        idx += layers[layer]->cnt_kernels * (int) pow(2, 2*level_aux);
+                    histogram_SPM[idx] += histogram[kernel * layers[layer]->out_node_kernel + i];
+                }
+            }
+        }
     }
 }
 
