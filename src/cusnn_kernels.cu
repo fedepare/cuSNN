@@ -116,10 +116,9 @@ __global__ void propagation(Layer **layers, int *inputs) {
 
         int idx_x_rf = node / layers[layer]->out_size[1];
         int idx_y_rf = node % layers[layer]->out_size[1];
-        int idx_nodesep_channel = channel * layers[layer]->out_node_kernel + node;
-        layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_channel] = 0.f;
 
         // prevent kernels that didn't converge to accumulate spikes
+        float nodesep_channel_input = 0.f;
         if (layers[layer]->learning || (!layers[layer]->enable_learning && layers[layer]->d_kernels_cnvg[kernel])) {
 
             layers[layer]->active = true;
@@ -159,7 +158,7 @@ __global__ void propagation(Layer **layers, int *inputs) {
                         int idx_syn = cols * layers[layer]->rf_side + rows;
                         int idx_syn_weights = channel_inp * layers[layer]->rf_side * layers[layer]->rf_side *
                                 layers[layer]->num_delays + idx_syn * layers[layer]->num_delays + d;
-                        layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_channel] += value *
+                        nodesep_channel_input += value *
                                 (layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] +
                                 layers[layer]->synapse_inh_scaling *
                                 layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights]);
@@ -167,6 +166,10 @@ __global__ void propagation(Layer **layers, int *inputs) {
                 }
             }
         }
+
+        // write to global memory
+        int idx_nodesep_channel = channel * layers[layer]->out_node_kernel + node;
+        layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_channel] = nodesep_channel_input;
     }
 }
 
@@ -185,19 +188,16 @@ __global__ void add_input(Layer **layers) {
         layers[layer]->cnt_kernels > kernel &&
         ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
 
-        int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
-        layers[layer]->d_d_kernels[kernel]->learning_trigger = false;
-        layers[layer]->d_d_kernels[kernel]->d_nodesep_input[idx_nodesep] = 0.f;
-        layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep] = 0.f;
-        layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep] = 0.f;
-
         // add inputs
+        float nodesep_input = 0.f;
         for (int ch = 0; ch < layers[layer]->kernel_channels; ch++) {
             int idx_nodesep_aux = (ch + channel) * layers[layer]->out_node_kernel + node;
-            layers[layer]->d_d_kernels[kernel]->d_nodesep_input[idx_nodesep] +=
-                    layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_aux];
+            nodesep_input += layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_aux];
         }
 
+        // pretrace data
+        float nodesep_pretrace = 0.f;
+        float nodesep_maxpretrace = 0.f;
         int idx_x_rf = node / layers[layer]->out_size[1];
         int idx_y_rf = node % layers[layer]->out_size[1];
         for (int rows = 0; rows < layers[layer]->rf_side - layers[layer]->rf_side_limits[0]; rows++) {
@@ -218,19 +218,23 @@ __global__ void add_input(Layer **layers) {
                                     layers[layer]->num_delays + idx_nodepad * layers[layer]->num_delays + d;
 
                             // node cumulative pretrace
-                            layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep] +=
-                                    layers[layer]->d_synapse_pretrace[idx_syn_inp];
+                            nodesep_pretrace += layers[layer]->d_synapse_pretrace[idx_syn_inp];
 
                             // max pretrace of receptive field
-                            if (layers[layer]->d_synapse_pretrace[idx_syn_inp] >
-                                layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep])
-                                layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep] =
-                                        layers[layer]->d_synapse_pretrace[idx_syn_inp];
+                            if (layers[layer]->d_synapse_pretrace[idx_syn_inp] > nodesep_maxpretrace)
+                                nodesep_maxpretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
                         }
                     }
                 }
             }
         }
+
+        // write to global memory
+        layers[layer]->d_d_kernels[kernel]->learning_trigger = false;
+        int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
+        layers[layer]->d_d_kernels[kernel]->d_nodesep_input[idx_nodesep] = nodesep_input;
+        layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep] = nodesep_pretrace;
+        layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep] = nodesep_maxpretrace;
     }
 }
 
@@ -1168,19 +1172,19 @@ __global__ void firing_node_kernel(Layer **layers) {
         layers[layer]->out_node_kernel > node &&
         (!layers[layer]->learning || !layers[layer]->inhibition_spatial)) {
 
-        layers[layer]->d_d_kernels[kernel]->d_max_channel[node] = -1;
+        int max_channel = -1;
         if (layers[layer]->firing_node) {
-
             float V_max = 0.f;
             for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
                 int idx_nodesep = ch * layers[layer]->out_node_kernel + node;
                 if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] &&
                     layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] > V_max) {
                     V_max = layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep];
-                    layers[layer]->d_d_kernels[kernel]->d_max_channel[node] = ch;
+                    max_channel = ch;
                 }
             }
         }
+        layers[layer]->d_d_kernels[kernel]->d_max_channel[node] = max_channel;
     }
 }
 
@@ -1196,9 +1200,8 @@ __global__ void firing_node(Layer **layers) {
         layers[layer]->out_node_kernel > node &&
         (!layers[layer]->learning || !layers[layer]->inhibition_spatial)) {
 
-        layers[layer]->d_max_kernel[node] = -1;
+        int max_kernel = -1;
         if (layers[layer]->firing_node) {
-
             float V_max = 0.f;
             for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
                 if (layers[layer]->d_d_kernels[k]->d_max_channel[node] != -1) {
@@ -1206,11 +1209,12 @@ __global__ void firing_node(Layer **layers) {
                             layers[layer]->out_node_kernel + node;
                     if (layers[layer]->d_d_kernels[k]->d_nodesep_V[idx_nodesep] > V_max) {
                         V_max = layers[layer]->d_d_kernels[k]->d_nodesep_V[idx_nodesep];
-                        layers[layer]->d_max_kernel[node] = k;
+                        max_kernel = k;
                     }
                 }
             }
         }
+        layers[layer]->d_max_kernel[node] = max_kernel;
     }
 }
 
