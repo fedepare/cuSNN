@@ -158,10 +158,7 @@ __global__ void propagation(Layer **layers, int *inputs) {
                         int idx_syn = cols * layers[layer]->rf_side + rows;
                         int idx_syn_weights = channel_inp * layers[layer]->rf_side * layers[layer]->rf_side *
                                 layers[layer]->num_delays + idx_syn * layers[layer]->num_delays + d;
-                        nodesep_channel_input += value *
-                                (layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] +
-                                layers[layer]->synapse_inh_scaling *
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights]);
+                        nodesep_channel_input += value * layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights];
                     }
                 }
             }
@@ -666,6 +663,19 @@ __global__ void learning_update_weights(Layer **layers) {
                             }
                         }
                     }
+                }
+            }
+
+            // update weights total (for this kernel, channel, and temporal slice)
+            for (int rows = 0; rows < layers[layer]->rf_side - layers[layer]->rf_side_limits[0]; rows++) {
+                for (int cols = 0; cols < layers[layer]->rf_side - layers[layer]->rf_side_limits[1]; cols++) {
+                    int idx_syn = cols * layers[layer]->rf_side + rows;
+                    int idx_syn_weights = channel * layers[layer]->rf_side * layers[layer]->rf_side *
+                            layers[layer]->num_delays + idx_syn * layers[layer]->num_delays + delay;
+                    layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights] =
+                            layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] +
+                            layers[layer]->synapse_inh_scaling *
+                            layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights];
                 }
             }
         }

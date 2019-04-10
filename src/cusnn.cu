@@ -231,20 +231,25 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
     // synaptic weights
     this->h_weights_exc = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     this->h_weights_inh = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    this->h_weights_total = (float *) malloc(sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_exc, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     cudaMalloc((void **)&this->d_weights_inh, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
+    cudaMalloc((void **)&this->d_weights_total, sizeof(float) * kernel_channels * rf_side * rf_side * num_delays);
     for (int ch = 0; ch < kernel_channels; ch++) {
         for (int i = 0; i < rf_side * rf_side; i++) {
             for (int d = 0; d < num_delays; d++) {
                 int idx = ch * rf_side * rf_side * num_delays + i * num_delays + d;
                 this->h_weights_exc[idx] = w_init;
                 this->h_weights_inh[idx] = 0.f;
+                this->h_weights_total[idx] = this->h_weights_exc[idx]; // works for inh weights initialized at 0
             }
         }
     }
     cudaMemcpy(this->d_weights_exc, this->h_weights_exc,
                sizeof(float) * kernel_channels * rf_side * rf_side * num_delays, cudaMemcpyHostToDevice);
     cudaMemcpy(this->d_weights_inh, this->h_weights_inh,
+               sizeof(float) * kernel_channels * rf_side * rf_side * num_delays, cudaMemcpyHostToDevice);
+    cudaMemcpy(this->d_weights_total, this->h_weights_total,
                sizeof(float) * kernel_channels * rf_side * rf_side * num_delays, cudaMemcpyHostToDevice);
 
     // delay flags
@@ -273,6 +278,7 @@ Kernel::~Kernel() {
     free(this->h_nodesep_train);
     free(this->h_weights_exc);
     free(this->h_weights_inh);
+    free(this->h_weights_total);
     free(this->h_delay_active);
     free(this->h_stdp_paredes_objective);
     free(this->h_stdp_postcnt);
@@ -293,6 +299,7 @@ Kernel::~Kernel() {
     cudaFree(this->d_max_channel);
     cudaFree(this->d_weights_exc);
     cudaFree(this->d_weights_inh);
+    cudaFree(this->d_weights_total);
     cudaFree(this->d_weights_exc_delta);
     cudaFree(this->d_weights_inh_delta);
     cudaFree(this->d_delay_active);
@@ -381,10 +388,16 @@ void Network::modify_kernels_pooling(int l) {
                             this->h_layers[l]->num_delays + i * this->h_layers[l]->num_delays + d;
                     if (k == ch) this->h_layers[l]->h_kernels[k]->h_weights_exc[idx] = 1.f;
                     else this->h_layers[l]->h_kernels[k]->h_weights_exc[idx] = 0.f;
+                    this->h_layers[l]->h_kernels[k]->h_weights_total[idx] =
+                            this->h_layers[l]->h_kernels[k]->h_weights_exc[idx];
                 }
             }
         }
         cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_exc, this->h_layers[l]->h_kernels[k]->h_weights_exc,
+                   sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
+                   this->h_layers[l]->rf_side * this->h_layers[l]->num_delays,
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_total, this->h_layers[l]->h_kernels[k]->h_weights_total,
                    sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
                    this->h_layers[l]->rf_side * this->h_layers[l]->num_delays,
                    cudaMemcpyHostToDevice);
@@ -409,10 +422,15 @@ void Network::modify_kernels_merge(int l) {
                     int idx = ch * this->h_layers[l]->rf_side * this->h_layers[l]->rf_side *
                             this->h_layers[l]->num_delays + i * this->h_layers[l]->num_delays + d;
                     this->h_layers[l]->h_kernels[k]->h_weights_exc[idx] = 1.f;
+                    this->h_layers[l]->h_kernels[k]->h_weights_total[idx] =
+                            this->h_layers[l]->h_kernels[k]->h_weights_exc[idx];
                 }
             }
         }
         cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_exc, this->h_layers[l]->h_kernels[k]->h_weights_exc,
+                   sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
+                   this->h_layers[l]->rf_side * this->h_layers[l]->num_delays, cudaMemcpyHostToDevice);
+        cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_total, this->h_layers[l]->h_kernels[k]->h_weights_total,
                    sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
                    this->h_layers[l]->rf_side * this->h_layers[l]->num_delays, cudaMemcpyHostToDevice);
     }
@@ -1396,12 +1414,20 @@ void Network::weights_to_device() {
 
     for (int l = 0; l < this->h_cnt_layers[0]; l++) {
         for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++) {
+            int length_weights = this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
+                    this->h_layers[l]->rf_side * this->h_layers[l]->num_delays;
+            for (int syn = 0; syn < length_weights; syn++)
+                this->h_layers[l]->h_kernels[k]->h_weights_total[syn] =
+                        this->h_layers[l]->h_kernels[k]->h_weights_exc[syn] +
+                        this->h_layers[l]->synapse_inh_scaling * this->h_layers[l]->h_kernels[k]->h_weights_inh[syn];
+
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_exc, this->h_layers[l]->h_kernels[k]->h_weights_exc,
-                       sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
-                       this->h_layers[l]->rf_side * this->h_layers[l]->num_delays, cudaMemcpyHostToDevice);
+                       sizeof(float) * length_weights, cudaMemcpyHostToDevice);
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_inh, this->h_layers[l]->h_kernels[k]->h_weights_inh,
-                       sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
-                       this->h_layers[l]->rf_side * this->h_layers[l]->num_delays, cudaMemcpyHostToDevice);
+                       sizeof(float) * length_weights, cudaMemcpyHostToDevice);
+            cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_weights_total, this->h_layers[l]->h_kernels[k]->h_weights_total,
+                       sizeof(float) * length_weights, cudaMemcpyHostToDevice);
+
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_delay_active, this->h_layers[l]->h_kernels[k]->h_delay_active,
                        sizeof(bool) * this->h_layers[l]->num_delays, cudaMemcpyHostToDevice);
             cudaMemcpy(this->h_layers[l]->h_d_kernels[k], this->h_layers[l]->h_kernels[k],

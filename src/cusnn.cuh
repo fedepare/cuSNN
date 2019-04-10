@@ -61,6 +61,10 @@ class Kernel {
         float *d_weights_inh;
         float *d_weights_inh_delta;
 
+        // exc + beta * inh
+        float *h_weights_total;
+        float *d_weights_total;
+
         // learning params
         bool learning_trigger;
         bool *d_weights_delta_maps;
