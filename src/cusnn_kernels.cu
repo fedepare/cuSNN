@@ -111,53 +111,62 @@ __global__ void propagation(Layer **layers, int *inputs) {
         layers[layer]->cnt_kernels > kernel &&
         layers[layer]->out_node_kernel > node) {
 
+        // global memory that we read only once
+        int rf_side = layers[layer]->rf_side;
+        int strides = layers[layer]->strides;
+        int num_delays = layers[layer]->num_delays;
+        int length_delay_inp = layers[layer]->length_delay_inp;
+        int padding[] = {layers[layer]->padding[0], layers[layer]->padding[1]};
+        int num_delays_active = layers[layer]->d_d_kernels[kernel]->num_delays_active;
+        int inp_size[] = {layers[layer]->inp_size[0], layers[layer]->inp_size[1], layers[layer]->inp_size[2]};
+        int rf_side_limits[] = {layers[layer]->rf_side_limits[0], layers[layer]->rf_side_limits[1]};
+        int out_size = layers[layer]->out_size[1];
+
         int channel_inp = 0;
         if (layers[layer]->out_maps == 1) channel_inp = channel;
 
-        int idx_x_rf = node / layers[layer]->out_size[1];
-        int idx_y_rf = node % layers[layer]->out_size[1];
+        int idx_x_rf = node / out_size;
+        int idx_y_rf = node % out_size;
 
         // prevent kernels that didn't converge to accumulate spikes
         float nodesep_channel_input = 0.f;
         if (layers[layer]->learning || (!layers[layer]->enable_learning && layers[layer]->d_kernels_cnvg[kernel])) {
 
             layers[layer]->active = true;
-            for (int rows = 0; rows < layers[layer]->rf_side - layers[layer]->rf_side_limits[0]; rows++) {
-                for (int cols = 0; cols < layers[layer]->rf_side - layers[layer]->rf_side_limits[1]; cols++) {
+            for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
+                for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
 
                     float value;
-                    int idx_xpad = idx_x_rf * layers[layer]->strides + cols;
-                    int idx_ypad = idx_y_rf * layers[layer]->strides + rows;
+                    int idx_xpad = idx_x_rf * strides + cols;
+                    int idx_ypad = idx_y_rf * strides + rows;
 
-                    for (int d = 0; d < layers[layer]->d_d_kernels[kernel]->num_delays_active; d++) {
+                    for (int d = 0; d < num_delays_active; d++) {
 
-                        if (idx_ypad < layers[layer]->padding[0] ||
-                            idx_ypad >= layers[layer]->inp_size[1] + layers[layer]->padding[0] ||
-                            idx_xpad < layers[layer]->padding[1] ||
-                            idx_xpad >= layers[layer]->inp_size[2] + layers[layer]->padding[1]) value = 0.f;
+                        if (idx_ypad < padding[0] ||
+                            idx_ypad >= inp_size[1] + padding[0] ||
+                            idx_xpad < padding[1] ||
+                            idx_xpad >= inp_size[2] + padding[1]) value = 0.f;
                         else {
 
-                            int idx_y = idx_ypad - layers[layer]->padding[0];
-                            int idx_x = idx_xpad - layers[layer]->padding[1];
-                            int idx_node = idx_x * layers[layer]->inp_size[1] + idx_y;
+                            int idx_y = idx_ypad - padding[0];
+                            int idx_x = idx_xpad - padding[1];
+                            int idx_node = idx_x * inp_size[1] + idx_y;
 
                             // spikes received after synaptic delay
                             if (!layer) {
-                                int delay_index = channel * layers[layer]->inp_size[1] * layers[layer]->inp_size[2] *
-                                        layers[layer]->length_delay_inp + idx_node * layers[layer]->length_delay_inp +
-                                        layers[layer]->d_delay_indices[d];
+                                int delay_index = channel * inp_size[1] * inp_size[2] * length_delay_inp +
+                                        idx_node * length_delay_inp + layers[layer]->d_delay_indices[d];
                                 value = (float) inputs[delay_index];
                             } else {
-                                int delay_index = idx_node * layers[layer]->length_delay_inp +
+                                int delay_index = idx_node * length_delay_inp +
                                         layers[layer]->d_delay_indices[d];
                                 value = (float) layers[layer-1]->d_d_kernels[channel]->d_node_train[delay_index];
                             }
                         }
 
                         // propagate input spikes
-                        int idx_syn = cols * layers[layer]->rf_side + rows;
-                        int idx_syn_weights = channel_inp * layers[layer]->rf_side * layers[layer]->rf_side *
-                                layers[layer]->num_delays + idx_syn * layers[layer]->num_delays + d;
+                        int idx_syn = cols * rf_side + rows;
+                        int idx_syn_weights = channel_inp * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
                         nodesep_channel_input += value * layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights];
                     }
                 }
@@ -185,41 +194,56 @@ __global__ void add_input(Layer **layers) {
         layers[layer]->cnt_kernels > kernel &&
         ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
 
+        // global memory that we read only once
+        int rf_side = layers[layer]->rf_side;
+        int strides = layers[layer]->strides;
+        int num_delays = layers[layer]->num_delays;
+        int kernel_channels = layers[layer]->kernel_channels;
+        int inp_node_kernel = layers[layer]->inp_node_kernel;
+        int out_node_kernel = layers[layer]->out_node_kernel;
+        int padding[] = {layers[layer]->padding[0], layers[layer]->padding[1]};
+        int inp_size[] = {layers[layer]->inp_size[0], layers[layer]->inp_size[1], layers[layer]->inp_size[2]};
+        int rf_side_limits[] = {layers[layer]->rf_side_limits[0], layers[layer]->rf_side_limits[1]};
+        int num_delays_active = layers[layer]->d_d_kernels[kernel]->num_delays_active;
+        int padding_total = layers[layer]->padding_total[0];
+        int out_size = layers[layer]->out_size[1];
+
         // add inputs
         float nodesep_input = 0.f;
-        for (int ch = 0; ch < layers[layer]->kernel_channels; ch++) {
-            int idx_nodesep_aux = (ch + channel) * layers[layer]->out_node_kernel + node;
+        for (int ch = 0; ch < kernel_channels; ch++) {
+            int idx_nodesep_aux = (ch + channel) * out_node_kernel + node;
             nodesep_input += layers[layer]->d_d_kernels[kernel]->d_nodesep_channel_input[idx_nodesep_aux];
         }
 
         // pretrace data
         float nodesep_pretrace = 0.f;
         float nodesep_maxpretrace = 0.f;
-        int idx_x_rf = node / layers[layer]->out_size[1];
-        int idx_y_rf = node % layers[layer]->out_size[1];
-        for (int rows = 0; rows < layers[layer]->rf_side - layers[layer]->rf_side_limits[0]; rows++) {
-            for (int cols = 0; cols < layers[layer]->rf_side - layers[layer]->rf_side_limits[1]; cols++) {
+        int idx_x_rf = node / out_size;
+        int idx_y_rf = node % out_size;
+        for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
+            for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
 
-                int idx_xpad = idx_x_rf * layers[layer]->strides + cols;
-                int idx_ypad = idx_y_rf * layers[layer]->strides + rows;
-                int idx_nodepad = idx_xpad * (layers[layer]->inp_size[1] + layers[layer]->padding_total[0]) + idx_ypad;
+                int idx_xpad = idx_x_rf * strides + cols;
+                int idx_ypad = idx_y_rf * strides + rows;
+                int idx_nodepad = idx_xpad * (inp_size[1] + padding_total) + idx_ypad;
 
-                if (idx_ypad >= layers[layer]->padding[0] ||
-                    idx_ypad < layers[layer]->inp_size[1] + layers[layer]->padding[0] ||
-                    idx_xpad >= layers[layer]->padding[1] ||
-                    idx_xpad < layers[layer]->inp_size[2] + layers[layer]->padding[1]) {
+                if (idx_ypad >= padding[0] ||
+                    idx_ypad < inp_size[1] + padding[0] ||
+                    idx_xpad >= padding[1] ||
+                    idx_xpad < inp_size[2] + padding[1]) {
 
-                    for (int ch = 0; ch < layers[layer]->kernel_channels; ch++) {
-                        for (int d = 0; d < layers[layer]->d_d_kernels[kernel]->num_delays_active; d++) {
-                            int idx_syn_inp = (ch + channel) * layers[layer]->inp_node_kernel *
-                                    layers[layer]->num_delays + idx_nodepad * layers[layer]->num_delays + d;
+                    for (int ch = 0; ch < kernel_channels; ch++) {
+                        for (int d = 0; d < num_delays_active; d++) {
+
+                            int idx_syn_inp = (ch + channel) * inp_node_kernel * num_delays + idx_nodepad * num_delays + d;
+                            float synapse_pretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
 
                             // node cumulative pretrace
-                            nodesep_pretrace += layers[layer]->d_synapse_pretrace[idx_syn_inp];
+                            nodesep_pretrace += synapse_pretrace;
 
                             // max pretrace of receptive field
-                            if (layers[layer]->d_synapse_pretrace[idx_syn_inp] > nodesep_maxpretrace)
-                                nodesep_maxpretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
+                            if (synapse_pretrace > nodesep_maxpretrace)
+                                nodesep_maxpretrace = synapse_pretrace;
                         }
                     }
                 }
@@ -227,8 +251,8 @@ __global__ void add_input(Layer **layers) {
         }
 
         // write to global memory
+        int idx_nodesep = channel * out_node_kernel + node;
         layers[layer]->d_d_kernels[kernel]->learning_trigger = false;
-        int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
         layers[layer]->d_d_kernels[kernel]->d_nodesep_input[idx_nodesep] = nodesep_input;
         layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep] = nodesep_pretrace;
         layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep] = nodesep_maxpretrace;
@@ -250,20 +274,26 @@ __global__ void update_V(Layer **layers, float *sim_step, float *refrac) {
         layers[layer]->out_node_kernel > node &&
         ((!channel && layers[layer]->out_maps == 1) || layers[layer]->kernel_channels == 1)) {
 
-        int idx_x_rf = node / layers[layer]->out_size[1];
-        int idx_y_rf = node % layers[layer]->out_size[1];
-        int idx_nodesep = channel * layers[layer]->out_node_kernel + node;
+        // global memory that we read only once
+        int out_node_kernel = layers[layer]->out_node_kernel;
+        int out_size = layers[layer]->out_size[1];
+        float decay = layers[layer]->decay;
+
+        int idx_x_rf = node / out_size;
+        int idx_y_rf = node % out_size;
+        int idx_nodesep = channel * out_node_kernel + node;
 
         // homeostasis mechanism
         float max_trace = 0.f;
         if (layers[layer]->homeostasis) {
             for (int rows = -1; rows <= 1; rows++) {
                 for (int cols = -1; cols <= 1; cols++) {
-                    int idx_node = (idx_x_rf + cols) * layers[layer]->out_size[1] + idx_y_rf + rows;
-                    int idx_nodesep_aux = channel * layers[layer]->out_node_kernel + idx_node;
-                    if (idx_node >= 0 && idx_node < layers[layer]->out_node_kernel) {
-                        if (max_trace < layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep_aux])
-                            max_trace = layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep_aux];
+                    int idx_node = (idx_x_rf + cols) * out_size + idx_y_rf + rows;
+                    int idx_nodesep_aux = channel * out_node_kernel + idx_node;
+                    if (idx_node >= 0 && idx_node < out_node_kernel) {
+                        float nodesep_pretrace = layers[layer]->d_d_kernels[kernel]->d_nodesep_pretrace[idx_nodesep_aux];
+                        if (max_trace < nodesep_pretrace)
+                            max_trace = nodesep_pretrace;
                     }
                 }
             }
@@ -274,8 +304,7 @@ __global__ void update_V(Layer **layers, float *sim_step, float *refrac) {
 
         // update V if node is not in refractory period
         if (layers[layer]->d_d_kernels[kernel]->d_nodesep_refrac[idx_nodesep] * sim_step[0] >= refrac[0])
-            layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] +=
-                    (sim_step[0]/layers[layer]->decay) *
+            layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] += (sim_step[0]/decay) *
                     (-layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] - max_trace +
                      layers[layer]->d_d_kernels[kernel]->d_nodesep_input[idx_nodesep]);
         if (layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] < 0.f)
@@ -288,30 +317,32 @@ __global__ void update_V(Layer **layers, float *sim_step, float *refrac) {
 
         // update Diehl's adaptive threshold
         if (layers[layer]->threshold_diehl) {
-            layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] -=
-                    sim_step[0] * layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] /
-                    layers[layer]->decay;
+            layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] -= sim_step[0] *
+                    layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] / decay;
             if (layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] < 0.f)
                 layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] = 0.f;
         }
 
         // spike generation
-        layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] = 0;
+        int nodesep_train = 0;
+        int nodesep_perpendicular = 0;
         if (layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] >= node_Vth) {
-            layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 1;
-            layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] = 1;
+            nodesep_train = 1;
+            nodesep_perpendicular = 1;
             layers[layer]->firing_node = true;
+            layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 1;
             if (layers[layer]->learning && !layers[layer]->inhibition)
                 layers[layer]->d_d_kernels[kernel]->learning_trigger = true;
             if (layers[layer]->threshold_diehl)
                 layers[layer]->d_d_kernels[kernel]->d_threshold_diehl_nodesep_theta[idx_nodesep] +=
                         layers[layer]->threshold_diehl_increase;
         }
+        layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] = nodesep_perpendicular;
 
         // update counters for Gerstner's and Kheradpisheh's STDP
         if (layers[layer]->learning_type == 3 ||
             layers[layer]->learning_type == 4) {
-            if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep])
+            if (nodesep_train)
                 layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep] = 0;
             else if (layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep] >= 0)
                 layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep]++;
@@ -1182,11 +1213,15 @@ __global__ void firing_node_kernel(Layer **layers) {
         layers[layer]->out_node_kernel > node &&
         (!layers[layer]->learning || !layers[layer]->inhibition_spatial)) {
 
+        // global memory that we read only once
+        int out_maps = layers[layer]->out_maps;
+        int out_node_kernel = layers[layer]->out_node_kernel;
+
         int max_channel = -1;
         if (layers[layer]->firing_node) {
             float V_max = 0.f;
-            for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
-                int idx_nodesep = ch * layers[layer]->out_node_kernel + node;
+            for (int ch = 0; ch < out_maps; ch++) {
+                int idx_nodesep = ch * out_node_kernel + node;
                 if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] &&
                     layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] > V_max) {
                     V_max = layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep];
@@ -1210,13 +1245,16 @@ __global__ void firing_node(Layer **layers) {
         layers[layer]->out_node_kernel > node &&
         (!layers[layer]->learning || !layers[layer]->inhibition_spatial)) {
 
+        // global memory that we read only once
+        int cnt_kernels = layers[layer]->cnt_kernels;
+        int out_node_kernel = layers[layer]->out_node_kernel;
+
         int max_kernel = -1;
         if (layers[layer]->firing_node) {
             float V_max = 0.f;
-            for (int k = 0; k < layers[layer]->cnt_kernels; k++) {
+            for (int k = 0; k < cnt_kernels; k++) {
                 if (layers[layer]->d_d_kernels[k]->d_max_channel[node] != -1) {
-                    int idx_nodesep = layers[layer]->d_d_kernels[k]->d_max_channel[node] *
-                            layers[layer]->out_node_kernel + node;
+                    int idx_nodesep = layers[layer]->d_d_kernels[k]->d_max_channel[node] * out_node_kernel + node;
                     if (layers[layer]->d_d_kernels[k]->d_nodesep_V[idx_nodesep] > V_max) {
                         V_max = layers[layer]->d_d_kernels[k]->d_nodesep_V[idx_nodesep];
                         max_kernel = k;
@@ -1446,6 +1484,9 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
         layers[layer]->cnt_kernels > kernel &&
         layers[layer]->out_node_kernel > node) {
 
+        // global memory that we read only once
+        int out_node_kernel = layers[layer]->out_node_kernel;
+
         layers[layer]->firing_node = false;
 
         int begin_vector = node * layers[layer]->length_delay_out;
@@ -1456,14 +1497,14 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
         layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = 0;
 
         for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
-            int idx_nodesep = ch * layers[layer]->out_node_kernel + node;
+            int idx_nodesep = ch * out_node_kernel + node;
             if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
                 layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = 1;
                 layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
 
                 // histograms (only for out_maps == 0)
                 if (!ch && layer == cnt_layers[0]-1 && histogram_type[0] > 0)
-                    histogram[kernel * layers[layer]->out_node_kernel + node] += 1;
+                    histogram[kernel * out_node_kernel + node] += 1;
             }
         }
 
