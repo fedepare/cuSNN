@@ -1261,7 +1261,8 @@ void Network::feed(bool& break_fun) {
 
 // update SPM histogram
 void Network::update_SPM(){
-    update_SPM_histogram<<<this->block_1, this->thread_0>>>(this->d_d_layers, this->d_histogram, this->d_histogram_SPM);
+    update_SPM_histogram<<<this->block_1, this->thread_0>>>(this->d_d_layers, this->d_cnt_layers, this->d_histogram,
+                                                            this->d_histogram_SPM);
 }
 
 
