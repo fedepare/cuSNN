@@ -267,7 +267,6 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
 Kernel::~Kernel() {
 
     free(this->h_node_train);
-    free(this->h_node_posttrace);
     free(this->h_nodesep_V);
     free(this->h_nodesep_refrac);
     free(this->h_nodesep_train);
@@ -1350,7 +1349,6 @@ void Network::init(){
         for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++) {
 
             for (int i = 0; i < h_layers[l]->out_node_kernel; i++) {
-                this->h_layers[l]->h_kernels[k]->h_node_posttrace[i] = 0.f;
                 for (int d = 0; d < h_layers[l]->length_delay_out; d++)
                     this->h_layers[l]->h_kernels[k]->h_node_train[i * h_layers[l]->length_delay_out + d] = 0;
             }
