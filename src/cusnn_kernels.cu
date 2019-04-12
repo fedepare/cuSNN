@@ -137,21 +137,20 @@ __global__ void propagation(Layer **layers, int *inputs) {
         if (layers[layer]->learning || (!layers[layer]->enable_learning && layers[layer]->d_kernels_cnvg[kernel])) {
 
             layers[layer]->active = true;
-            for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
-                for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
+            for (int d = 0; d < num_delays_active; d++) {
+                int delay_indices = layers[layer]->d_delay_indices[d];
+                for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
+                    for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
 
-                    float value;
-                    int idx_xpad = idx_x_rf * strides + cols;
-                    int idx_ypad = idx_y_rf * strides + rows;
+                        int idx_xpad = idx_x_rf * strides + cols;
+                        int idx_ypad = idx_y_rf * strides + rows;
 
-                    for (int d = 0; d < num_delays_active; d++) {
+                        if (idx_ypad >= padding[0] &&
+                            idx_ypad < inp_size[1] + padding[0] &&
+                            idx_xpad >= padding[1] &&
+                            idx_xpad < inp_size[2] + padding[1]) {
 
-                        if (idx_ypad < padding[0] ||
-                            idx_ypad >= inp_size[1] + padding[0] ||
-                            idx_xpad < padding[1] ||
-                            idx_xpad >= inp_size[2] + padding[1]) value = 0.f;
-                        else {
-
+                            float value;
                             int idx_y = idx_ypad - padding[0];
                             int idx_x = idx_xpad - padding[1];
                             int idx_node = idx_x * inp_size[1] + idx_y;
@@ -159,19 +158,18 @@ __global__ void propagation(Layer **layers, int *inputs) {
                             // spikes received after synaptic delay
                             if (!layer) {
                                 int delay_index = channel * inp_size[1] * inp_size[2] * length_delay_inp +
-                                        idx_node * length_delay_inp + layers[layer]->d_delay_indices[d];
+                                        idx_node * length_delay_inp + delay_indices;
                                 value = (float) inputs[delay_index];
                             } else {
-                                int delay_index = idx_node * length_delay_inp +
-                                        layers[layer]->d_delay_indices[d];
+                                int delay_index = idx_node * length_delay_inp + delay_indices;
                                 value = (float) layers[layer-1]->d_d_kernels[channel]->d_node_train[delay_index];
                             }
-                        }
 
-                        // propagate input spikes
-                        int idx_syn = cols * rf_side + rows;
-                        int idx_syn_weights = channel_inp * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
-                        nodesep_channel_input += value * layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights];
+                            // propagate input spikes
+                            int idx_syn = cols * rf_side + rows;
+                            int idx_syn_weights = channel_inp * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
+                            nodesep_channel_input += value * layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights];
+                        }
                     }
                 }
             }
