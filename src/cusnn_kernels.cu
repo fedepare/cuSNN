@@ -1555,13 +1555,6 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
                     histogram[kernel * out_node_kernel + node] += 1;
             }
         }
-
-        float node_posttrace = layers[layer]->d_d_kernels[kernel]->d_node_posttrace[node];
-        node_posttrace += (sim_step[0]/layers[layer]->decay) *
-                (-node_posttrace + (float) layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector]);
-        if (node_posttrace < 0.f)
-            node_posttrace = 0.f;
-        layers[layer]->d_d_kernels[kernel]->d_node_posttrace[node] = node_posttrace;
     }
 }
 

@@ -21,9 +21,7 @@ class Kernel {
 
         // output map data
         int *h_node_train;
-        float *h_node_posttrace;
         int *d_node_train;
-        float *d_node_posttrace;
 
         int *h_nodesep_train;
         float *h_nodesep_V;

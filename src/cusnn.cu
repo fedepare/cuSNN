@@ -192,18 +192,13 @@ Kernel::Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int le
 
     // output map data
     this->h_node_train = (int *) malloc(sizeof(int) * out_node_kernel * length_delay_out);
-    this->h_node_posttrace = (float *) malloc(sizeof(float) * out_node_kernel);
     cudaMalloc((void **)&this->d_node_train, sizeof(int) * out_node_kernel * length_delay_out);
-    cudaMalloc((void **)&this->d_node_posttrace, sizeof(float) * out_node_kernel);
     for (int i = 0; i < out_node_kernel; i++) {
-        this->h_node_posttrace[i] = 0.f;
         for (int d = 0; d < length_delay_out; d++)
             this->h_node_train[i * length_delay_out + d] = 0;
     }
     cudaMemcpy(this->d_node_train, this->h_node_train,
                sizeof(int) * out_node_kernel * length_delay_out, cudaMemcpyHostToDevice);
-    cudaMemcpy(this->d_node_posttrace, this->h_node_posttrace,
-               sizeof(float) * out_node_kernel, cudaMemcpyHostToDevice);
 
     this->h_nodesep_train = (int *) malloc(sizeof(int) * out_nodesep_kernel);
     this->h_nodesep_V = (float *) malloc(sizeof(float) * out_nodesep_kernel);
@@ -285,7 +280,6 @@ Kernel::~Kernel() {
     free(this->h_threshold_diehl_nodesep_theta);
 
     cudaFree(this->d_node_train);
-    cudaFree(this->d_node_posttrace);
     cudaFree(this->d_nodesep_perpendicular);
     cudaFree(this->d_nodesep_V);
     cudaFree(this->d_nodesep_channel_input);
@@ -1288,9 +1282,6 @@ void Network::copy_to_host(){
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->h_node_train, this->h_layers[l]->h_kernels[k]->d_node_train,
                        sizeof(int) * this->h_layers[l]->out_node_kernel * this->h_layers[l]->length_delay_out,
                        cudaMemcpyDeviceToHost);
-            cudaMemcpy(this->h_layers[l]->h_kernels[k]->h_node_posttrace,
-                       this->h_layers[l]->h_kernels[k]->d_node_posttrace,
-                       sizeof(float) * this->h_layers[l]->out_node_kernel, cudaMemcpyDeviceToHost);
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->h_weights_exc, this->h_layers[l]->h_kernels[k]->d_weights_exc,
                        sizeof(float) * this->h_layers[l]->kernel_channels * this->h_layers[l]->rf_side *
                        this->h_layers[l]->rf_side * this->h_layers[l]->num_delays, cudaMemcpyDeviceToHost);
@@ -1366,9 +1357,6 @@ void Network::init(){
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_node_train, this->h_layers[l]->h_kernels[k]->h_node_train,
                        sizeof(int) * this->h_layers[l]->out_node_kernel * this->h_layers[l]->length_delay_out,
                        cudaMemcpyHostToDevice);
-            cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_node_posttrace,
-                       this->h_layers[l]->h_kernels[k]->h_node_posttrace,
-                       sizeof(float) * this->h_layers[l]->out_node_kernel, cudaMemcpyHostToDevice);
 
             for (int i = 0; i < this->h_layers[l]->out_nodesep_kernel; i++) {
                 this->h_layers[l]->h_kernels[k]->h_nodesep_V[i] = 0.f;
