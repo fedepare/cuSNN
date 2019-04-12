@@ -62,8 +62,10 @@ __global__ void update_input_channels(Layer **layers, float *sim_step, int *inpu
         int idx_syn_inp = channel * layers[layer]->inp_node_kernel * num_delays + node * num_delays + delay;
         float synapse_pretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
 
-        if (idx_ypad < padding[0] || idx_ypad >= inp_size[1] + padding[0] ||
-            idx_xpad < padding[1] || idx_xpad >= inp_size[2] + padding[1]) {
+        if (idx_ypad < padding[0] ||
+            idx_ypad >= inp_size[1] + padding[0] ||
+            idx_xpad < padding[1] ||
+            idx_xpad >= inp_size[2] + padding[1]) {
 
             // pre-synaptic trace for zero-padding nodes
             if (layers[layer]->learning) synapse_pretrace = 1000.f;
@@ -227,16 +229,15 @@ __global__ void add_input(Layer **layers) {
 
                 int idx_xpad = idx_x_rf * strides + cols;
                 int idx_ypad = idx_y_rf * strides + rows;
-                int idx_nodepad = idx_xpad * (inp_size[1] + padding_total) + idx_ypad;
 
-                if (idx_ypad >= padding[0] ||
-                    idx_ypad < inp_size[1] + padding[0] ||
-                    idx_xpad >= padding[1] ||
+                if (idx_ypad >= 0 &&
+                    idx_ypad < inp_size[1] + padding[0] &&
+                    idx_xpad >= 0 &&
                     idx_xpad < inp_size[2] + padding[1]) {
 
+                    int idx_nodepad = idx_xpad * (inp_size[1] + padding_total) + idx_ypad;
                     for (int ch = 0; ch < kernel_channels; ch++) {
                         for (int d = 0; d < num_delays_active; d++) {
-
                             int idx_syn_inp = (ch + channel) * inp_node_kernel * num_delays + idx_nodepad * num_delays + d;
                             float synapse_pretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
 
