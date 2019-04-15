@@ -1523,7 +1523,7 @@ __global__ void update_output_channels(Layer **layers) {
 
 
 // update output information
-__global__ void update_output(Layer **layers, float *sim_step, int *histogram, int *histogram_type, int *cnt_layers) {
+__global__ void update_output(Layer **layers, int *histogram, int *histogram_type, int *cnt_layers) {
 
     int layer = blockIdx.x;
     int node = blockIdx.y;
@@ -1535,25 +1535,25 @@ __global__ void update_output(Layer **layers, float *sim_step, int *histogram, i
 
         layers[layer]->firing_node = false;
         int out_node_kernel = layers[layer]->out_node_kernel;
+        int length_delay_out = layers[layer]->length_delay_out;
 
-        int begin_vector = node * layers[layer]->length_delay_out;
-        int end_vector = (node + 1) * layers[layer]->length_delay_out;
+        int begin_vector = node * length_delay_out;
+        int end_vector = (node + 1) * length_delay_out;
         for (int i = end_vector-1; i > begin_vector; i--)
             layers[layer]->d_d_kernels[kernel]->d_node_train[i] =
                     layers[layer]->d_d_kernels[kernel]->d_node_train[i-1];
-        layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = 0;
 
+        int node_train = 0;
         for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
             int idx_nodesep = ch * out_node_kernel + node;
             if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
-                layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = 1;
+                node_train = 1;
                 layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
-
-                // histograms (only for out_maps == 0)
-                if (!ch && layer == cnt_layers[0]-1 && histogram_type[0] > 0)
+                if (!ch && layer == cnt_layers[0]-1 && histogram_type[0] > 0) // histograms (only for out_maps == 0)
                     histogram[kernel * out_node_kernel + node] += 1;
             }
         }
+        layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = node_train;
     }
 }
 

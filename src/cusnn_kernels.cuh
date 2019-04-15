@@ -36,7 +36,7 @@ __global__ void perpendicular_inhibition(Layer **layers);
 __global__ void stdp_paredes_track_convergence_channel(Layer **layers);
 __global__ void stdp_paredes_track_convergence(Layer **layers);
 __global__ void update_output_channels(Layer **layers);
-__global__ void update_output(Layer **layers, float *sim_step, int *histogram, int *histogram_type, int *cnt_layers);
+__global__ void update_output(Layer **layers, int *histogram, int *histogram_type, int *cnt_layers);
 __global__ void learning_limit_updates(Layer **layers);
 __global__ void update_SPM_histogram(Layer **layers, int *cnt_layers, int *histogram, int *histogram_SPM);
 

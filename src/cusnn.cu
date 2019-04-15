@@ -1238,8 +1238,8 @@ void Network::feed(bool& break_fun) {
 
     // update outputs
     update_output_channels<<<this->block_3, this->thread_0>>>(this->d_d_layers);
-    update_output<<<this->block_4, this->thread_0>>>(this->d_d_layers, this->d_sim_step, this->d_histogram,
-            this->d_histogram_type, this->d_cnt_layers);
+    update_output<<<this->block_4, this->thread_0>>>(this->d_d_layers, this->d_histogram, this->d_histogram_type,
+                                                     this->d_cnt_layers);
 
     // limit learning updates
     if (this->learning) {
