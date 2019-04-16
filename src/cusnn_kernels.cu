@@ -68,7 +68,7 @@ __global__ void update_input_channels(Layer **layers, float *sim_step, int *inpu
             idx_xpad >= inp_size[2] + padding[1]) {
 
             // pre-synaptic trace for zero-padding nodes
-            if (layers[layer]->learning) synapse_pretrace = 1000.f;
+            if (layers[layer]->learning && layers[layer]->homeostasis) synapse_pretrace = 1000.f;
             else synapse_pretrace = 0.f;
 
         } else {
