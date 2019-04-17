@@ -78,10 +78,6 @@ class Kernel {
         float *d_stdp_paredes_objective;
         float *d_stdp_paredes_objective_avg;
 
-        // Diehl's adaptive threshold
-        float *h_threshold_diehl_nodesep_theta;
-        float *d_threshold_diehl_nodesep_theta;
-
         /* FUNCTIONS */
         Kernel(int out_node_kernel, int out_nodesep_kernel, int out_maps, int length_delay_out, float node_refrac,
                int rf_side, int num_delays, float w_init, int kernel_channels, float sim_step);
@@ -178,10 +174,6 @@ class Layer {
 
         // Gerstner's STDP params
         bool stdp_gerstner_weight_dependence;
-
-        // Diehl's adaptive threshold
-        bool threshold_diehl;
-        float threshold_diehl_increase;
 
         // layers
         Kernel** h_kernels;
@@ -280,7 +272,6 @@ class Network {
                        float synapse_inh_scaling = 0.f, int rf_side = 7, int out_channels = 8,
                        std::string padding = "none", float w_init = 0.5f);
         void create_network(bool& break_fun);
-        void enable_adaptive_threshold_diehl(float threshold_delta, bool& break_fun);
         void enable_stdp_paredes(float learning_rate, float scale_a, float convg_th, int limit_updates,
                                  bool inhibition_spatial, int stats_window, bool& break_fun);
         void enable_stdp_shrestha(float learning_rate, float window_LTP, bool weight_boundaries, float weight_max,

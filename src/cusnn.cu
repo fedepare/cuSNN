@@ -145,7 +145,6 @@ Layer::Layer(std::string layer_type, bool learning, bool load_weights, bool home
     this->active = false;
     this->firing_node = false;
     this->inhibition_spatial = false;
-    this->threshold_diehl = false;
 
     // input delay
     this->length_delay_inp = (int) ceilf(this->max_delay / sim_step) + 1;
@@ -276,7 +275,6 @@ Kernel::~Kernel() {
     free(this->h_delay_active);
     free(this->h_stdp_paredes_objective);
     free(this->h_stdp_postcnt);
-    free(this->h_threshold_diehl_nodesep_theta);
 
     cudaFree(this->d_node_train);
     cudaFree(this->d_nodesep_perpendicular);
@@ -302,7 +300,6 @@ Kernel::~Kernel() {
     cudaFree(this->d_stdp_paredes_objective_avg);
     cudaFree(this->d_stdp_paredes_objective);
     cudaFree(this->d_stdp_postcnt);
-    cudaFree(this->d_threshold_diehl_nodesep_theta);
 }
 
 
@@ -1067,44 +1064,6 @@ void Network::enable_stdp_kheradpisheh(float learning_rate_exc, int limit_update
 }
 
 
-// assign Diehl's adaptive threshold params
-void Network::enable_adaptive_threshold_diehl(float threshold_delta, bool& break_fun) {
-
-    if (break_fun) return;
-    if (threshold_delta < 0.f) {
-        printf("Error Adaptive Threshold: threshold_delta has to be greater or equal to zero.\n");
-        break_fun = true;
-        return;
-    }
-
-    for (int l = 0; l < this->h_cnt_layers[0]; l++) {
-        this->h_layers[l]->threshold_diehl = true;
-        this->h_layers[l]->threshold_diehl_increase = threshold_delta;
-        if (this->h_layers[l]->homeostasis && this->h_layers[l]->threshold_diehl)
-            printf("Warning Layer %i: Using Paredes' and Diehl's homeostasis mechanism together.\n\n", l);
-
-        for (int k = 0; k < this->h_layers[l]->cnt_kernels; k++) {
-            this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta =
-                    (float *) malloc(sizeof(float) * this->h_layers[l]->out_nodesep_kernel);
-            cudaMalloc((void **)&this->h_layers[l]->h_kernels[k]->d_threshold_diehl_nodesep_theta,
-                       sizeof(float) * this->h_layers[l]->out_nodesep_kernel);
-            for (int i = 0; i < this->h_layers[l]->out_nodesep_kernel; i++)
-                this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta[i] = 0.f;
-            cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_threshold_diehl_nodesep_theta,
-                       this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta,
-                       sizeof(float) * this->h_layers[l]->out_nodesep_kernel, cudaMemcpyHostToDevice);
-
-            cudaMemcpy(this->h_layers[l]->h_d_kernels[k], this->h_layers[l]->h_kernels[k],
-                       sizeof(Kernel), cudaMemcpyHostToDevice);
-        }
-        cudaMemcpy(this->h_layers[l]->d_d_kernels, this->h_layers[l]->h_d_kernels,
-                   sizeof(Kernel*) * this->h_layers[l]->cnt_kernels, cudaMemcpyHostToDevice);
-        cudaMemcpy(this->h_d_layers[l], this->h_layers[l], sizeof(Layer), cudaMemcpyHostToDevice);
-    }
-    cudaMemcpy(this->d_d_layers, this->h_d_layers, sizeof(Layer*) * this->h_cnt_layers[0], cudaMemcpyHostToDevice);
-}
-
-
 // model's summary
 void Network::summary() {
 
@@ -1360,8 +1319,6 @@ void Network::init(){
                 this->h_layers[l]->h_kernels[k]->h_nodesep_V[i] = 0.f;
                 this->h_layers[l]->h_kernels[k]->h_nodesep_train[i] = 0;
                 this->h_layers[l]->h_kernels[k]->h_nodesep_refrac[i] = this->h_node_refrac[0] / this->h_sim_step[0];
-                if (this->h_layers[l]->threshold_diehl)
-                    this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta[i] = 0.f;
             }
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_nodesep_train,
                        this->h_layers[l]->h_kernels[k]->h_nodesep_train,
@@ -1371,10 +1328,6 @@ void Network::init(){
             cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_nodesep_refrac,
                        this->h_layers[l]->h_kernels[k]->h_nodesep_refrac,
                        sizeof(float) * this->h_layers[l]->out_nodesep_kernel, cudaMemcpyHostToDevice);
-            if (this->h_layers[l]->threshold_diehl)
-                cudaMemcpy(this->h_layers[l]->h_kernels[k]->d_threshold_diehl_nodesep_theta,
-                           this->h_layers[l]->h_kernels[k]->h_threshold_diehl_nodesep_theta,
-                           sizeof(float) * this->h_layers[l]->out_nodesep_kernel, cudaMemcpyHostToDevice);
 
             if (this->h_layers[l]->learning_type == 3 ||
                 this->h_layers[l]->learning_type == 4) {
