@@ -364,6 +364,7 @@ __global__ void spatial_firing_node_kernel_channel(Layer **layers) {
         int node_max = -1;
         float V_max = 0.f;
         int out_node_kernel = layers[layer]->out_node_kernel;
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
 
         if (layers[layer]->active &&
             layers[layer]->firing_node &&
@@ -372,17 +373,19 @@ __global__ void spatial_firing_node_kernel_channel(Layer **layers) {
             layers[layer]->learning_type &&
             layers[layer]->inhibition_spatial) {
 
+            int *nodesep_perpendicular = kernel_local->d_nodesep_perpendicular;
+            float *nodesep_V = kernel_local->d_nodesep_V;
+
             for (int node = 0; node < out_node_kernel; node++) {
                 int idx_nodesep = channel * out_node_kernel + node;
-                if (layers[layer]->d_d_kernels[kernel]->d_nodesep_perpendicular[idx_nodesep] &&
-                    layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] > V_max) {
+                if (nodesep_perpendicular[idx_nodesep] && nodesep_V[idx_nodesep] > V_max) {
                     node_max = node;
-                    V_max = layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep];
+                    V_max = nodesep_V[idx_nodesep];
                 }
             }
         }
-        layers[layer]->d_d_kernels[kernel]->d_V_max[channel] = V_max;
-        layers[layer]->d_d_kernels[kernel]->d_node_max[channel] = node_max;
+        kernel_local->d_V_max[channel] = V_max;
+        kernel_local->d_node_max[channel] = node_max;
     }
 }
 
@@ -399,6 +402,7 @@ __global__ void spatial_firing_node_kernel(Layer **layers) {
         float V_max = 0.f;
         int node_max = -1;
         int channel_max = -1;
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
 
         if (layers[layer]->active &&
             layers[layer]->firing_node &&
@@ -407,17 +411,20 @@ __global__ void spatial_firing_node_kernel(Layer **layers) {
             layers[layer]->learning_type &&
             layers[layer]->inhibition_spatial) {
 
+            float *V_max_ch = kernel_local->d_V_max;
+            int *node_max_ch = kernel_local->d_node_max;
+
             for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
-                if (layers[layer]->d_d_kernels[kernel]->d_V_max[ch] > V_max) {
-                    V_max = layers[layer]->d_d_kernels[kernel]->d_V_max[ch];
-                    node_max = layers[layer]->d_d_kernels[kernel]->d_node_max[ch];
+                if (V_max_ch[ch] > V_max) {
+                    V_max = V_max_ch[ch];
+                    node_max = node_max_ch[ch];
                     channel_max = ch;
                 }
             }
         }
-        layers[layer]->d_d_kernels[kernel]->V_max = V_max;
-        layers[layer]->d_d_kernels[kernel]->node_max = node_max;
-        layers[layer]->d_d_kernels[kernel]->channel_max = channel_max;
+        kernel_local->V_max = V_max;
+        kernel_local->node_max = node_max;
+        kernel_local->channel_max = channel_max;
     }
 }
 
@@ -482,6 +489,15 @@ __global__ void spatial_perpendicular_inhibition(Layer **layers) {
         int out_node_kernel = layers[layer]->out_node_kernel;
         int learning_type = layers[layer]->learning_type;
 
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+        int *nodesep_train = kernel_local->d_nodesep_train;
+        float *nodesep_V = kernel_local->d_nodesep_V;
+        float *nodesep_refrac = kernel_local->d_nodesep_refrac;
+
+        int *stdp_postcnt;
+        if (learning_type == 3 || learning_type == 4)
+            stdp_postcnt = kernel_local->d_stdp_postcnt;
+
         int idx_x_rf = node_max / out_size;
         int idx_y_rf = node_max % out_size;
 
@@ -498,13 +514,13 @@ __global__ void spatial_perpendicular_inhibition(Layer **layers) {
                         (kernel == kernel_max && channel == channel_max && idx_node != node_max)) {
 
                         int idx_nodesep = channel * out_node_kernel + idx_node;
-                        layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
-                        layers[layer]->d_d_kernels[kernel]->d_nodesep_V[idx_nodesep] = 0.f;
-                        layers[layer]->d_d_kernels[kernel]->d_nodesep_refrac[idx_nodesep] = 0.f;
+                        nodesep_train[idx_nodesep] = 0;
+                        nodesep_V[idx_nodesep] = 0.f;
+                        nodesep_refrac[idx_nodesep] = 0.f;
 
                         // update counters for Gerstner's and Kheradpisheh's STDP
                         if (learning_type == 3 || learning_type == 4)
-                            layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep] = -1;
+                            stdp_postcnt[idx_nodesep] = -1;
                     }
                 }
             }
@@ -553,22 +569,34 @@ __global__ void stdp_paredes_kernel_channel(Layer **layers) {
             float synapse_w_init = layers[layer]->synapse_w_init;
             float stdp_paredes_a = layers[layer]->stdp_paredes_a;
             float learning_rate = layers[layer]->learning_rate;
+            float *synapse_pretrace = layers[layer]->d_synapse_pretrace;
+
+            Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+            int *nodesep_train = kernel_local->d_nodesep_train;
+            float *nodesep_maxpretrace = kernel_local->d_nodesep_maxpretrace;
+            float *weights_exc_delta = kernel_local->d_weights_exc_delta;
+            float *weights_exc = kernel_local->d_weights_exc;
+
+            float *weights_inh_delta, *weights_inh;
+            if (synapse_inh_scaling > 0.f) {
+                weights_inh_delta = kernel_local->d_weights_inh_delta;
+                weights_inh = kernel_local->d_weights_inh;
+            }
 
             for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                 for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                     int idx_syn = cols * rf_side + rows;
-                    int idx_syn_delta = channel * rf_side * rf_side *
-                            num_delays + idx_syn * num_delays + delay;
-                    layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] = 0.f;
+                    int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
+                    weights_exc_delta[idx_syn_delta] = 0.f;
                     if (synapse_inh_scaling > 0.f)
-                        layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] = 0.f;
+                        weights_inh_delta[idx_syn_delta] = 0.f;
                 }
             }
 
             int cnt_nodes = 0;
             for (int node = 0; node < out_node_kernel; node++) {
                 int idx_nodesep = channel_out * out_node_kernel + node;
-                if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
+                if (nodesep_train[idx_nodesep]) {
 
                     cnt_nodes++;
                     weights_delta_maps_channels = true;
@@ -590,19 +618,18 @@ __global__ void stdp_paredes_kernel_channel(Layer **layers) {
 
                             /* Long-Term Potentiation (LTP) and Long-Term Depression (LTD) */
                             // excitatory synapses
-                            float diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] - synapse_w_init;
-                            float trace_norm = layers[layer]->d_synapse_pretrace[idx_syn_inp] /
-                                    layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep];
+                            float diff_weights = weights_exc[idx_syn_weights] - synapse_w_init;
+                            float trace_norm = synapse_pretrace[idx_syn_inp] / nodesep_maxpretrace[idx_nodesep];
                             float LTP = exp(-diff_weights) * (exp(trace_norm) - stdp_paredes_a);
                             float LTD = exp(diff_weights) * (exp(1.f - trace_norm) - stdp_paredes_a);
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] += learning_rate * (LTP - LTD);
+                            weights_exc_delta[idx_syn_delta] += learning_rate * (LTP - LTD);
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f) {
-                                diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] + synapse_w_init;
+                                diff_weights = weights_inh[idx_syn_weights] + synapse_w_init;
                                 LTP = exp(-diff_weights) * (exp(trace_norm) - stdp_paredes_a);
                                 LTD = exp(diff_weights) * (exp(1.f - trace_norm) - stdp_paredes_a);
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] += learning_rate * (LTP - LTD);
+                                weights_inh_delta[idx_syn_delta] += learning_rate * (LTP - LTD);
                             }
                         }
                     }
@@ -615,9 +642,9 @@ __global__ void stdp_paredes_kernel_channel(Layer **layers) {
                     for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                         int idx_syn = cols * rf_side + rows;
                         int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                        layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
+                        weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
                         if (synapse_inh_scaling > 0.f)
-                            layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
+                            weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
                     }
                 }
             }
@@ -644,8 +671,10 @@ __global__ void learning_update_weights(Layer **layers) {
         !layers[layer]->d_kernels_cnvg[kernel] &&
         ((!channel && layers[layer]->kernel_channels == 1) || layers[layer]->out_maps == 1)) {
 
-        if (layers[layer]->d_d_kernels[kernel]->learning_trigger &&
-            layers[layer]->d_d_kernels[kernel]->d_delay_active[delay]) {
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+
+        if (kernel_local->learning_trigger &&
+            kernel_local->d_delay_active[delay]) {
 
             // global memory optimization
             int kernel_channels = layers[layer]->kernel_channels;
@@ -656,12 +685,22 @@ __global__ void learning_update_weights(Layer **layers) {
             float synapse_inh_scaling = layers[layer]->synapse_inh_scaling;
             int learning_type = layers[layer]->learning_type;
 
+            bool* weights_delta_maps_channels = kernel_local->d_weights_delta_maps_channels;
+            float *weights_exc_delta = kernel_local->d_weights_exc_delta;
+            float *weights_exc = kernel_local->d_weights_exc;
+            float *weights_inh = kernel_local->d_weights_inh;
+            float *weights_total = kernel_local->d_weights_total;
+
+            float *weights_inh_delta;
+            if (synapse_inh_scaling > 0.f)
+                weights_inh_delta = kernel_local->d_weights_inh_delta;
+
             // number of output maps contributing in this weight update
             int cnt_maps = 0;
             for (int m = 0; m < out_maps; m++) {
                 for (int ch = 0; ch < kernel_channels; ch++) {
                     int idx_channel = m * kernel_channels + ch;
-                    if (layers[layer]->d_d_kernels[kernel]->d_weights_delta_maps_channels[idx_channel]) {
+                    if (weights_delta_maps_channels[idx_channel]) {
                         cnt_maps++;
                         break;
                     }
@@ -676,14 +715,14 @@ __global__ void learning_update_weights(Layer **layers) {
                         int idx_syn = cols * rf_side + rows;
                         for (int ch = 0; ch < out_maps; ch++) {
                             int idx_syn_delta = (ch + channel) * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                            accum_exc += layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta];
+                            accum_exc += weights_exc_delta[idx_syn_delta];
                             if (synapse_inh_scaling > 0.f)
-                                accum_inh += layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta];
+                                accum_inh += weights_inh_delta[idx_syn_delta];
                         }
                         int idx_syn_weights = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                        layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] += accum_exc / (float) cnt_maps;
+                        weights_exc[idx_syn_weights] += accum_exc / (float) cnt_maps;
                         if (synapse_inh_scaling > 0.f)
-                            layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] += accum_inh / (float) cnt_maps;
+                            weights_inh[idx_syn_weights] += accum_inh / (float) cnt_maps;
                     }
                 }
             }
@@ -697,20 +736,16 @@ __global__ void learning_update_weights(Layer **layers) {
                             int idx_syn = cols * rf_side + rows;
                             int idx_syn_weights = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
 
-                            float weights_exc = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights];
-                            if (weights_exc < 0.f)
-                                weights_exc = 0.f;
-                            else if (weights_exc > stdp_shrestha_gerstner_weight_max)
-                                weights_exc = stdp_shrestha_gerstner_weight_max;
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] = weights_exc;
+                            if (weights_exc[idx_syn_weights] < 0.f)
+                                weights_exc[idx_syn_weights] = 0.f;
+                            else if (weights_exc[idx_syn_weights] > stdp_shrestha_gerstner_weight_max)
+                                weights_exc[idx_syn_weights] = stdp_shrestha_gerstner_weight_max;
 
                             if (synapse_inh_scaling > 0.f) {
-                                float weights_inh = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights];
-                                if (weights_inh > 0.f)
-                                    weights_inh = 0.f;
-                                else if (weights_inh < -stdp_shrestha_gerstner_weight_max)
-                                    weights_inh = -stdp_shrestha_gerstner_weight_max;
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] = weights_inh;
+                                if (weights_inh[idx_syn_weights] > 0.f)
+                                    weights_inh[idx_syn_weights] = 0.f;
+                                else if (weights_inh[idx_syn_weights] < -stdp_shrestha_gerstner_weight_max)
+                                    weights_inh[idx_syn_weights] = -stdp_shrestha_gerstner_weight_max;
                             }
                         }
                     }
@@ -722,9 +757,8 @@ __global__ void learning_update_weights(Layer **layers) {
                 for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                     int idx_syn = cols * rf_side + rows;
                     int idx_syn_weights = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                    layers[layer]->d_d_kernels[kernel]->d_weights_total[idx_syn_weights] =
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] +
-                            synapse_inh_scaling * layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights];
+                    weights_total[idx_syn_weights] = weights_exc[idx_syn_weights] +
+                            synapse_inh_scaling * weights_inh[idx_syn_weights];
                 }
             }
         }
@@ -772,15 +806,26 @@ __global__ void stdp_shrestha_kernel_channel(Layer **layers) {
             int stdp_shrestha_gerstner_window_LTP = layers[layer]->stdp_shrestha_gerstner_window_LTP;
             float synapse_w_init = layers[layer]->synapse_w_init;
             float learning_rate = layers[layer]->learning_rate;
+            int *stdp_precnt = layers[layer]->d_stdp_precnt;
+
+            Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+            int *nodesep_train = kernel_local->d_nodesep_train;
+            float *weights_exc_delta = kernel_local->d_weights_exc_delta;
+            float *weights_exc = kernel_local->d_weights_exc;
+
+            float *weights_inh_delta, *weights_inh;
+            if (synapse_inh_scaling > 0.f) {
+                weights_inh_delta = kernel_local->d_weights_inh_delta;
+                weights_inh = kernel_local->d_weights_inh;
+            }
 
             for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                 for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                     int idx_syn = cols * rf_side + rows;
-                    int idx_syn_delta = channel * rf_side * rf_side *
-                            num_delays + idx_syn * num_delays + delay;
-                    layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] = 0.f;
+                    int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
+                    weights_exc_delta[idx_syn_delta] = 0.f;
                     if (synapse_inh_scaling > 0.f)
-                        layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] = 0.f;
+                        weights_inh_delta[idx_syn_delta] = 0.f;
                 }
             }
 
@@ -791,7 +836,7 @@ __global__ void stdp_shrestha_kernel_channel(Layer **layers) {
                 int idx_y_rf = node % out_size;
                 int idx_nodesep = channel_out * out_node_kernel + node;
 
-                if (!layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep])
+                if (!nodesep_train[idx_nodesep])
                     continue;
 
                 weights_delta_maps_channels = true;
@@ -809,37 +854,37 @@ __global__ void stdp_shrestha_kernel_channel(Layer **layers) {
                         int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
 
                         float diff_weights;
-                        int delta_T = layers[layer]->d_stdp_precnt[idx_syn_inp];
+                        int delta_T = stdp_precnt[idx_syn_inp];
 
                         /* LTP */
                         if (delta_T >= 0 && delta_T < stdp_shrestha_gerstner_window_LTP) {
 
                             // excitatory synapses
-                            diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] - synapse_w_init;
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] += learning_rate * exp(-diff_weights);
+                            diff_weights = weights_exc[idx_syn_weights] - synapse_w_init;
+                            weights_exc_delta[idx_syn_delta] += learning_rate * exp(-diff_weights);
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f) {
-                                diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] + synapse_w_init;
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] += learning_rate * exp(-diff_weights);
+                                diff_weights = weights_inh[idx_syn_weights] + synapse_w_init;
+                                weights_inh_delta[idx_syn_delta] += learning_rate * exp(-diff_weights);
                             }
 
                         /* LTD */
                         } else {
 
                             // excitatory synapses
-                            diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] - synapse_w_init;
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] -= learning_rate * exp(diff_weights);
+                            diff_weights = weights_exc[idx_syn_weights] - synapse_w_init;
+                            weights_exc_delta[idx_syn_delta] -= learning_rate * exp(diff_weights);
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f) {
-                                diff_weights = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] + synapse_w_init;
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -= learning_rate * exp(diff_weights);
+                                diff_weights = weights_inh[idx_syn_weights] + synapse_w_init;
+                                weights_inh_delta[idx_syn_delta] -= learning_rate * exp(diff_weights);
                             }
                         }
 
                         // reset counters
-                        layers[layer]->d_stdp_precnt[idx_syn_inp] = -1;
+                        stdp_precnt[idx_syn_inp] = -1;
                     }
                 }
             }
@@ -849,11 +894,10 @@ __global__ void stdp_shrestha_kernel_channel(Layer **layers) {
                 for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                     for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                         int idx_syn = cols * rf_side + rows;
-                        int idx_syn_delta = channel * rf_side * rf_side *
-                                num_delays + idx_syn * num_delays + delay;
-                        layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
+                        int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
+                        weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
                         if (synapse_inh_scaling > 0.f)
-                            layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
+                            weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
                     }
                 }
             }
@@ -905,14 +949,26 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
             int stdp_shrestha_gerstner_window_LTD = layers[layer]->stdp_shrestha_gerstner_window_LTD;
             float stdp_shrestha_gerstner_weight_max = layers[layer]->stdp_shrestha_gerstner_weight_max;
             bool stdp_gerstner_weight_dependence = layers[layer]->stdp_gerstner_weight_dependence;
+            int *stdp_precnt = layers[layer]->d_stdp_precnt;
+
+            Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+            int *stdp_postcnt = kernel_local->d_stdp_postcnt;
+            float *weights_exc_delta = kernel_local->d_weights_exc_delta;
+            float *weights_exc = kernel_local->d_weights_exc;
+
+            float *weights_inh_delta, *weights_inh;
+            if (synapse_inh_scaling > 0.f) {
+                weights_inh_delta = kernel_local->d_weights_inh_delta;
+                weights_inh = kernel_local->d_weights_inh;
+            }
 
             for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                 for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                     int idx_syn = cols * rf_side + rows;
                     int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                    layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] = 0.f;
+                    weights_exc_delta[idx_syn_delta] = 0.f;
                     if (synapse_inh_scaling > 0.f)
-                        layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] = 0.f;
+                        weights_inh_delta[idx_syn_delta] = 0.f;
                 }
             }
 
@@ -931,18 +987,15 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
                         int idx_nodepad = idx_xpad * (inp_size + padding_total) + idx_ypad;
                         int idx_syn_inp = channel * inp_node_kernel * num_delays + idx_nodepad * num_delays + delay;
 
-                        int stdp_postcnt = layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep];
-                        int stdp_precnt = layers[layer]->d_stdp_precnt[idx_syn_inp];
-                        if (stdp_postcnt == -1)
-                            continue;
-                        int delta_T = stdp_precnt - stdp_postcnt;
+                        if (stdp_postcnt[idx_nodesep] == -1) continue;
+                        int delta_T = stdp_precnt[idx_syn_inp] - stdp_postcnt[idx_nodesep];
 
                         int idx_syn = cols * rf_side + rows;
                         int idx_syn_weights = channel_inp * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
                         int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
 
                         /* LTP */
-                        if (delta_T >= 0 && delta_T <= stdp_shrestha_gerstner_window_LTP && !stdp_postcnt) {
+                        if (delta_T >= 0 && delta_T <= stdp_shrestha_gerstner_window_LTP && !stdp_postcnt[idx_nodesep]) {
 
                             if (!node_contrib) {
                                 cnt_nodes++;
@@ -954,22 +1007,20 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
 
                             // excitatory synapses
                             if (stdp_gerstner_weight_dependence)
-                                layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] +=
-                                        update * (stdp_shrestha_gerstner_weight_max -
-                                        layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights]);
-                            else layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] += update;
+                                weights_exc_delta[idx_syn_delta] += update *
+                                        (stdp_shrestha_gerstner_weight_max - weights_exc[idx_syn_weights]);
+                            else weights_exc_delta[idx_syn_delta] += update;
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f) {
                                 if (stdp_gerstner_weight_dependence)
-                                    layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -=
-                                            update * abs(-stdp_shrestha_gerstner_weight_max -
-                                            layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights]);
-                                else layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -= update;
+                                    weights_inh_delta[idx_syn_delta] -= update *
+                                            abs(-stdp_shrestha_gerstner_weight_max - weights_inh[idx_syn_weights]);
+                                else weights_inh_delta[idx_syn_delta] -= update;
                             }
 
                         /* LTD */
-                        } else if (delta_T > stdp_shrestha_gerstner_window_LTP && !stdp_postcnt) {
+                        } else if (delta_T > stdp_shrestha_gerstner_window_LTP && !stdp_postcnt[idx_nodesep]) {
 
                             if (!node_contrib) {
                                 cnt_nodes++;
@@ -978,14 +1029,14 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
                             }
 
                             // excitatory synapses
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] += -learning_rate;
+                            weights_exc_delta[idx_syn_delta] += -learning_rate;
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f)
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -= -learning_rate;
+                                weights_inh_delta[idx_syn_delta] -= -learning_rate;
 
                         /* LTD */
-                        } else if (delta_T < 0 && !stdp_precnt) {
+                        } else if (delta_T < 0 && !stdp_precnt[idx_syn_inp]) {
 
                             if (!node_contrib) {
                                 cnt_nodes++;
@@ -997,16 +1048,14 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
 
                             // excitatory synapses
                             if (stdp_gerstner_weight_dependence)
-                                layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] +=
-                                        update * layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights];
-                            else layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] += update;
+                                weights_exc_delta[idx_syn_delta] += update * weights_exc[idx_syn_weights];
+                            else weights_exc_delta[idx_syn_delta] += update;
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f) {
                                 if (stdp_gerstner_weight_dependence)
-                                    layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -= update *
-                                            abs(layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights]);
-                                else layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -= update;
+                                    weights_inh_delta[idx_syn_delta] -= update * abs(weights_inh[idx_syn_weights]);
+                                else weights_inh_delta[idx_syn_delta] -= update;
                             }
                         }
                     }
@@ -1018,11 +1067,10 @@ __global__ void stdp_gerstner_kernel_channel(Layer **layers) {
                 for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                     for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                         int idx_syn = cols * rf_side + rows;
-                        int idx_syn_delta = channel * rf_side * rf_side *
-                                num_delays + idx_syn * num_delays + delay;
-                        layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
+                        int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
+                        weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
                         if (synapse_inh_scaling > 0.f)
-                            layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
+                            weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
                     }
                 }
             }
@@ -1070,14 +1118,26 @@ __global__ void stdp_kheradpisheh_kernel_channel(Layer **layers) {
             int padding_total = layers[layer]->padding_total[0];
             int inp_node_kernel = layers[layer]->inp_node_kernel;
             float learning_rate = layers[layer]->learning_rate;
+            int *stdp_precnt = layers[layer]->d_stdp_precnt;
+
+            Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+            int *stdp_postcnt = kernel_local->d_stdp_postcnt;
+            float *weights_exc_delta = kernel_local->d_weights_exc_delta;
+            float *weights_exc = kernel_local->d_weights_exc;
+
+            float *weights_inh_delta, *weights_inh;
+            if (synapse_inh_scaling > 0.f) {
+                weights_inh_delta = kernel_local->d_weights_inh_delta;
+                weights_inh = kernel_local->d_weights_inh;
+            }
 
             for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                 for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                     int idx_syn = cols * rf_side + rows;
                     int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
-                    layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] = 0.f;
+                    weights_exc_delta[idx_syn_delta] = 0.f;
                     if (synapse_inh_scaling > 0.f)
-                        layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] = 0.f;
+                        weights_inh_delta[idx_syn_delta] = 0.f;
                 }
             }
 
@@ -1096,20 +1156,16 @@ __global__ void stdp_kheradpisheh_kernel_channel(Layer **layers) {
                         int idx_nodepad = idx_xpad * (inp_size + padding_total) + idx_ypad;
                         int idx_syn_inp = channel * inp_node_kernel * num_delays + idx_nodepad * num_delays + delay;
 
-                        int stdp_postcnt = layers[layer]->d_d_kernels[kernel]->d_stdp_postcnt[idx_nodesep];
-                        if (stdp_postcnt == -1)
+                        if (stdp_postcnt[idx_nodesep] == -1)
                             continue;
-                        int delta_T = layers[layer]->d_stdp_precnt[idx_syn_inp] - stdp_postcnt;
+                        int delta_T = stdp_precnt[idx_syn_inp] - stdp_postcnt[idx_nodesep];
 
                         int idx_syn = cols * rf_side + rows;
                         int idx_syn_weights = channel_inp * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
                         int idx_syn_delta = channel * rf_side * rf_side * num_delays + idx_syn * num_delays + delay;
 
-                        float weights_exc = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights];
-                        float weights_inh = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights];
-
                         /* LTP */
-                        if (delta_T >= 0 && !stdp_postcnt) {
+                        if (delta_T >= 0 && !stdp_postcnt[idx_nodesep]) {
 
                             if (!node_contrib) {
                                 cnt_nodes++;
@@ -1118,13 +1174,13 @@ __global__ void stdp_kheradpisheh_kernel_channel(Layer **layers) {
                             }
 
                             // excitatory synapses
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] +=
-                                    learning_rate * weights_exc * (1.f - weights_exc);
+                            weights_exc_delta[idx_syn_delta] += learning_rate *
+                                    weights_exc[idx_syn_weights] * (1.f - weights_exc[idx_syn_weights]);
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f)
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] -=
-                                        learning_rate * abs(weights_inh) * (1.f - abs(weights_inh));
+                                weights_inh_delta[idx_syn_delta] -= learning_rate *
+                                        abs(weights_inh[idx_syn_weights]) * (1.f - abs(weights_inh[idx_syn_weights]));
 
                         /* LTD */
                         } else if (delta_T < 0) {
@@ -1136,13 +1192,13 @@ __global__ void stdp_kheradpisheh_kernel_channel(Layer **layers) {
                             }
 
                             // excitatory synapses
-                            layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] -=
-                                    learning_rate * weights_exc * (1.f - weights_exc);
+                            weights_exc_delta[idx_syn_delta] -= learning_rate *
+                                    weights_exc[idx_syn_weights] * (1.f - weights_exc[idx_syn_weights]);
 
                             // inhibitory synapses
                             if (synapse_inh_scaling > 0.f)
-                                layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] +=
-                                        learning_rate * abs(weights_inh) * (1.f - abs(weights_inh));
+                                weights_inh_delta[idx_syn_delta] += learning_rate *
+                                        abs(weights_inh[idx_syn_weights]) * (1.f - abs(weights_inh[idx_syn_weights]));
                         }
                     }
                 }
@@ -1155,9 +1211,9 @@ __global__ void stdp_kheradpisheh_kernel_channel(Layer **layers) {
                         int idx_syn = cols * rf_side + rows;
                         int idx_syn_delta = channel * rf_side * rf_side *
                                             num_delays + idx_syn * num_delays + delay;
-                        layers[layer]->d_d_kernels[kernel]->d_weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
+                        weights_exc_delta[idx_syn_delta] /= (float) cnt_nodes;
                         if (synapse_inh_scaling > 0.f)
-                            layers[layer]->d_d_kernels[kernel]->d_weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
+                            weights_inh_delta[idx_syn_delta] /= (float) cnt_nodes;
                     }
                 }
             }
@@ -1184,48 +1240,49 @@ __global__ void drop_delays_kernel(Layer **layers, float *drop_delays_th) {
             layers[layer]->d_d_kernels[kernel]->num_delays_active > 1) {
 
             // global memory optimization
-            int num_delays_active = layers[layer]->d_d_kernels[kernel]->num_delays_active;
             int rf_side = layers[layer]->rf_side;
             int rf_side_limits[] = {layers[layer]->rf_side_limits[0], layers[layer]->rf_side_limits[1]};
             int kernel_channels = layers[layer]->kernel_channels;
             int num_delays = layers[layer]->num_delays;
 
+            Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+            float *weights_exc = kernel_local->d_weights_exc;
+            float *sum_exc_weights = kernel_local->d_sum_exc_weights;
+            bool *delay_active = kernel_local->d_delay_active;
+            int num_delays_active = kernel_local->num_delays_active;
+
             int delay_max_weights = -1;
             float max_weights = 0.f;
             for (int d = 0; d < num_delays_active; d++) {
-                float sum_exc_weights = 0.f;
+                sum_exc_weights[d] = 0.f;
                 for (int rows = 0; rows < rf_side - rf_side_limits[0]; rows++) {
                     for (int cols = 0; cols < rf_side - rf_side_limits[1]; cols++) {
                         for (int ch = 0; ch < kernel_channels; ch++) {
                             int idx_syn = cols * rf_side + rows;
                             int idx_syn_weights = ch * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
-                            sum_exc_weights += layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights];
+                            sum_exc_weights[d] += weights_exc[idx_syn_weights];
                         }
                     }
                 }
-                layers[layer]->d_d_kernels[kernel]->d_sum_exc_weights[d] = sum_exc_weights;
-                if (sum_exc_weights >= max_weights) {
+                if (sum_exc_weights[d] >= max_weights) {
                     delay_max_weights = d;
-                    max_weights = sum_exc_weights;
+                    max_weights = sum_exc_weights[d];
                 }
             }
 
             bool drop_delays = false;
             for (int d = delay_max_weights + 1; d < num_delays_active; d++) {
-                if (drop_delays ||
-                    layers[layer]->d_d_kernels[kernel]->d_sum_exc_weights[d] <
-                    layers[layer]->d_d_kernels[kernel]->d_sum_exc_weights[delay_max_weights] * drop_delays_th[0]) {
-                    layers[layer]->d_d_kernels[kernel]->d_delay_active[d] = false;
+                if (drop_delays || sum_exc_weights[d] < sum_exc_weights[delay_max_weights] * drop_delays_th[0]) {
+                    delay_active[d] = false;
                     drop_delays = true;
                 }
             }
 
             num_delays_active = 0;
             for (int d = 0; d < num_delays; d++) {
-                if (layers[layer]->d_d_kernels[kernel]->d_delay_active[d])
+                if (delay_active[d])
                     num_delays_active++;
             }
-            layers[layer]->d_d_kernels[kernel]->num_delays_active = num_delays_active;
         }
     }
 }
@@ -1374,6 +1431,16 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers) {
         int inp_size = layers[layer]->inp_size[1];
         int padding_total = layers[layer]->padding_total[0];
         int inp_node_kernel = layers[layer]->inp_node_kernel;
+        float *synapse_pretrace = layers[layer]->d_synapse_pretrace;
+
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+        int *nodesep_train = kernel_local->d_nodesep_train;
+        float *nodesep_maxpretrace = kernel_local->d_nodesep_maxpretrace;
+        float *weights_exc = kernel_local->d_weights_exc;
+
+        float *weights_inh;
+        if (synapse_inh_scaling > 0.f)
+            weights_inh = kernel_local->d_weights_inh;
 
         // max weights in a kernel
         float max_weight_exc = 0.f;
@@ -1384,13 +1451,11 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers) {
                     for (int d = 0; d < num_delays_active; d++) {
                         int idx_syn = cols * rf_side + rows;
                         int idx_syn_weights = ch * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
-                        float weights_exc = layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights];
-                        float weights_inh = layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights];
-                        if (max_weight_exc < weights_exc)
-                            max_weight_exc = weights_exc;
+                        if (max_weight_exc < weights_exc[idx_syn_weights])
+                            max_weight_exc = weights_exc[idx_syn_weights];
                         if (synapse_inh_scaling > 0.f &&
-                            max_weight_inh < weights_inh + 2.f * synapse_w_init)
-                            max_weight_inh = weights_inh + 2.f * synapse_w_init;
+                            max_weight_inh < weights_inh[idx_syn_weights] + 2.f * synapse_w_init)
+                            max_weight_inh = weights_inh[idx_syn_weights] + 2.f * synapse_w_init;
                     }
                 }
             }
@@ -1403,7 +1468,7 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers) {
         for (int node = 0; node < out_node_kernel; node++) {
 
             int idx_nodesep = channel * out_node_kernel + node;
-            if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
+            if (nodesep_train[idx_nodesep]) {
                 weights_delta_maps = true;
                 int idx_x_rf = node / out_size;
                 int idx_y_rf = node % out_size;
@@ -1419,19 +1484,15 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers) {
                             for (int d = 0; d < num_delays_active; d++) {
                                 int idx_syn_weights = ch * rf_side * rf_side * num_delays + idx_syn * num_delays + d;
                                 int idx_syn_inp = (ch + channel) * inp_node_kernel * num_delays + idx_nodepad * num_delays + d;
-                                float synapse_pretrace = layers[layer]->d_synapse_pretrace[idx_syn_inp];
-                                float nodesep_maxpretrace = layers[layer]->d_d_kernels[kernel]->d_nodesep_maxpretrace[idx_nodesep];
 
                                 // excitatory synapses
-                                stdp_paredes_objective_avg += pow(synapse_pretrace / nodesep_maxpretrace -
-                                            layers[layer]->d_d_kernels[kernel]->d_weights_exc[idx_syn_weights] /
-                                            max_weight_exc, 2.f);
+                                stdp_paredes_objective_avg += pow(synapse_pretrace[idx_syn_inp] / nodesep_maxpretrace[idx_nodesep] -
+                                        weights_exc[idx_syn_weights] / max_weight_exc, 2.f);
 
                                 // inhibitory synapses
                                 if (synapse_inh_scaling > 0.f)
-                                    stdp_paredes_objective_avg += pow(synapse_pretrace / nodesep_maxpretrace -
-                                                (layers[layer]->d_d_kernels[kernel]->d_weights_inh[idx_syn_weights] +
-                                                 2.f * layers[layer]->synapse_w_init) / max_weight_inh, 2.f);
+                                    stdp_paredes_objective_avg += pow(synapse_pretrace[idx_syn_inp] / nodesep_maxpretrace[idx_nodesep] -
+                                                (weights_inh[idx_syn_weights] + 2.f * synapse_w_init) / max_weight_inh, 2.f);
                             }
                         }
                     }
@@ -1439,16 +1500,15 @@ __global__ void stdp_paredes_track_convergence_channel(Layer **layers) {
                 stdp_objective_cnt++;
             }
         }
-        layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective_avg[channel] = stdp_paredes_objective_avg;
-        layers[layer]->d_d_kernels[kernel]->d_weights_delta_maps[channel] = weights_delta_maps;
 
         // update convergence data
         if (stdp_objective_cnt > 0) {
-            layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective_avg[channel] /=
-                    (float) (stdp_objective_cnt * rf_side * rf_side * num_delays_active);
+            stdp_paredes_objective_avg /= (float) (stdp_objective_cnt * rf_side * rf_side * num_delays_active);
             if (synapse_inh_scaling > 0.f)
-                layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective_avg[channel] /= 2.f;
+                stdp_paredes_objective_avg /= 2.f;
         }
+        kernel_local->d_stdp_paredes_objective_avg[channel] = stdp_paredes_objective_avg;
+        kernel_local->d_weights_delta_maps[channel] = weights_delta_maps;
     }
 }
 
@@ -1466,30 +1526,34 @@ __global__ void stdp_paredes_track_convergence(Layer **layers) {
         layers[layer]->firing_node &&
         !layers[layer]->d_kernels_cnvg[kernel]) {
 
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+        bool* weights_delta_maps = kernel_local->d_weights_delta_maps;
+        float* stdp_paredes_objective_avg_ch = kernel_local->d_stdp_paredes_objective_avg;
+
         // compute objective function
         float accum = 0.f;
         int stdp_objective_cnt = 0;
         for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
-            if (layers[layer]->d_d_kernels[kernel]->d_weights_delta_maps[ch]) {
-                accum += layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective_avg[ch];
+            if (weights_delta_maps[ch]) {
+                accum += stdp_paredes_objective_avg_ch[ch];
                 stdp_objective_cnt++;
             }
         }
 
         // compute moving average of objective function
-        int stdp_paredes_stats_window = layers[layer]->stdp_paredes_stats_window;
         if (stdp_objective_cnt > 0) {
+            int stdp_paredes_stats_window = layers[layer]->stdp_paredes_stats_window;
+            float* stdp_paredes_objective = kernel_local->d_stdp_paredes_objective;
 
             for (int i = stdp_paredes_stats_window; i > 0; i--)
-                layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective[i] =
-                        layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective[i-1];
-            layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective[0] = accum / (float) stdp_objective_cnt;
+                stdp_paredes_objective[i] = stdp_paredes_objective[i-1];
+            stdp_paredes_objective[0] = accum / (float) stdp_objective_cnt;
 
             float stdp_paredes_objective_avg = 0.f;
             for (int i = 0; i < stdp_paredes_stats_window; i++)
-                stdp_paredes_objective_avg += layers[layer]->d_d_kernels[kernel]->d_stdp_paredes_objective[i];
+                stdp_paredes_objective_avg += stdp_paredes_objective[i];
             stdp_paredes_objective_avg /= (float) stdp_paredes_stats_window;
-            layers[layer]->d_d_kernels[kernel]->stdp_paredes_objective_avg = stdp_paredes_objective_avg;
+            kernel_local->stdp_paredes_objective_avg = stdp_paredes_objective_avg;
 
             if (stdp_paredes_objective_avg < layers[layer]->stdp_paredes_convg_th)
                 layers[layer]->d_kernels_cnvg[kernel] = true;
@@ -1538,23 +1602,25 @@ __global__ void update_output(Layer **layers, int *histogram, int *histogram_typ
         int out_node_kernel = layers[layer]->out_node_kernel;
         int length_delay_out = layers[layer]->length_delay_out;
 
+        Kernel *kernel_local = layers[layer]->d_d_kernels[kernel];
+        int *nodesep_train = kernel_local->d_nodesep_train;
+        int *node_train = kernel_local->d_node_train;
+
         int begin_vector = node * length_delay_out;
         int end_vector = (node + 1) * length_delay_out;
         for (int i = end_vector-1; i > begin_vector; i--)
-            layers[layer]->d_d_kernels[kernel]->d_node_train[i] =
-                    layers[layer]->d_d_kernels[kernel]->d_node_train[i-1];
+            node_train[i] = node_train[i-1];
 
-        int node_train = 0;
+        node_train[begin_vector] = 0;
         for (int ch = 0; ch < layers[layer]->out_maps; ch++) {
             int idx_nodesep = ch * out_node_kernel + node;
-            if (layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep]) {
-                node_train = 1;
-                layers[layer]->d_d_kernels[kernel]->d_nodesep_train[idx_nodesep] = 0;
+            if (nodesep_train[idx_nodesep]) {
+                node_train[begin_vector] = 1;
+                nodesep_train[idx_nodesep] = 0;
                 if (!ch && layer == cnt_layers[0]-1 && histogram_type[0] > 0) // histograms (only for out_maps == 0)
                     histogram[kernel * out_node_kernel + node] += 1;
             }
         }
-        layers[layer]->d_d_kernels[kernel]->d_node_train[begin_vector] = node_train;
     }
 }
 
